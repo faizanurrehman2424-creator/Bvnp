@@ -1,0 +1,10 @@
+Flask
+gunicorn
+pandas
+google-generativeai
+python-jobspy
+gspread
+oauth2client
+pypdf
+fpdf
+werkzeug

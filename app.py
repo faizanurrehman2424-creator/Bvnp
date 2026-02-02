@@ -249,7 +249,7 @@ def search_jobs():
             site_name=["indeed", "glassdoor"],
             search_term=search_term,
             location="Netherlands", 
-            results_wanted=20, 
+            results_wanted=5, 
             hours_old=72,
             country_indeed='Netherlands',
             linkedin_fetch_description=True

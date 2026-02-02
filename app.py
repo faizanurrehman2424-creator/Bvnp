@@ -246,7 +246,7 @@ def search_jobs():
 
     try:
         jobs = scrape_jobs(
-            site_name=["indeed", "linkedin", "glassdoor"],
+            site_name=["indeed", "glassdoor"],
             search_term=search_term,
             location="Netherlands", 
             results_wanted=20, 

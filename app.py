@@ -258,35 +258,45 @@ def search_jobs():
     print(f"🔎 Searching Jooble for: {keyword_string}")
 
     try:
-        # 3. CALL THE API
         response = requests.post(BASE_URL + API_KEY, json=payload)
-        
-        if response.status_code != 200:
-            return jsonify({"error": f"Jooble API Error: {response.status_code}"}), 500
-            
         jooble_data = response.json()
         raw_jobs = jooble_data.get('jobs', [])
 
-        # 4. FORMAT DATA (Mapping Jooble format to your App's format)
+        # --- NEW: STRICT FILTERING LOGIC ---
+        forbidden_titles = ["recruiter", "talent acquisition", "hr manager", "floor manager", "financial analyst"]
+        forbidden_companies = ["agency", "werving", "selectie"]
+
         formatted_jobs = []
         for job in raw_jobs:
+            title = job.get('title', '').lower()
+            company = job.get('company', '').lower()
+            
+            # 1. Check if a forbidden word is in the TITLE
+            if any(bad_word in title for bad_word in forbidden_titles):
+                continue # Skip this job
+                
+            # 2. Check if a forbidden word is in the COMPANY
+            if any(bad_word in company for bad_word in forbidden_companies):
+                continue # Skip this job
+
+            # 3. If it passes, add it!
             formatted_jobs.append({
                 "title": job.get('title', 'No Title'),
                 "company": job.get('company', 'Unknown'),
                 "location": job.get('location', 'Netherlands'),
                 "job_url": job.get('link'),
-                # Jooble gives a 'snippet', we map it to 'description'
                 "description": job.get('snippet', '') 
             })
-
-        # 5. SAVE TO GOOGLE SHEETS (Optional - kept from your old code)
         if sheet and formatted_jobs:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for job in formatted_jobs:
                 row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
                 try: sheet.append_row(row)
                 except: pass
+    
 
+        # ... (save to sheets code) ...
+        
         return jsonify(formatted_jobs)
 
     except Exception as e:

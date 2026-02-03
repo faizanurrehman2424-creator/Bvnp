@@ -8,3 +8,4 @@ oauth2client
 pypdf
 fpdf
 werkzeug
+requests

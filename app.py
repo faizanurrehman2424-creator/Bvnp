@@ -10,6 +10,7 @@ from jobspy import scrape_jobs
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+import requests
 
 app = Flask(__name__)
 
@@ -239,61 +240,59 @@ def search_jobs():
     
     if not keywords: return jsonify({"error": "No keywords"}), 400
 
-    base_query = " ".join(keywords[:2])
-    # Added explicit negative keywords to help the search engine
-    search_term = f"{base_query} -recruitment -agency"
-    print(f"🔎 Searching: {search_term}")
+    # 1. SETUP JOOBLE
+    # Ideally, get this from environment variables: os.environ.get("JOOBLE_KEY")
+    # For now, you can paste it here to test, but move to Env Vars for security later.
+    API_KEY = os.environ.get("JOOBLE_KEY") 
+    BASE_URL = "https://jooble.org/api/"
+    
+    # 2. PREPARE REQUEST
+    # Jooble likes a single string of keywords
+    keyword_string = " ".join(keywords)
+    
+    payload = {
+        "keywords": keyword_string,
+        "location": "Netherlands"
+    }
+    
+    print(f"🔎 Searching Jooble for: {keyword_string}")
 
     try:
-        jobs = scrape_jobs(
-            site_name=["indeed", "glassdoor"],
-            search_term=search_term,
-            location="Netherlands", 
-            results_wanted=5, 
-            hours_old=72,
-            country_indeed='Netherlands',
-            linkedin_fetch_description=True
-        )
+        # 3. CALL THE API
+        response = requests.post(BASE_URL + API_KEY, json=payload)
         
-        df = jobs
-        if not isinstance(df, pd.DataFrame):
-             jobs_list = []
-        else:
-            if not df.empty:
-                df = df.drop_duplicates(subset=['title', 'company'], keep='first')
-                
-                # --- UPDATED FORBIDDEN LIST (Relaxed) ---
-                # Removed "consultant", "consulting", "hr"
-                forbidden_words = [
-                    "staffing", "recruiting", "recruitment", "agency", 
-                    "werving", "selectie", "detacheringsbureau", "interim",
-                    "visser", "baars"
-                ]
-                
-                def is_bad(row):
-                    t = (str(row.get('company','')) + " " + str(row.get('description',''))).lower()
-                    return any(bad in t for bad in forbidden_words)
+        if response.status_code != 200:
+            return jsonify({"error": f"Jooble API Error: {response.status_code}"}), 500
+            
+        jooble_data = response.json()
+        raw_jobs = jooble_data.get('jobs', [])
 
-                df = df[~df.apply(is_bad, axis=1)]
-                df = df.head(10)
+        # 4. FORMAT DATA (Mapping Jooble format to your App's format)
+        formatted_jobs = []
+        for job in raw_jobs:
+            formatted_jobs.append({
+                "title": job.get('title', 'No Title'),
+                "company": job.get('company', 'Unknown'),
+                "location": job.get('location', 'Netherlands'),
+                "job_url": job.get('link'),
+                # Jooble gives a 'snippet', we map it to 'description'
+                "description": job.get('snippet', '') 
+            })
 
-            # Fix JSON NaN error
-            json_str = df.to_json(orient='records', default_handler=str)
-            jobs_list = json.loads(json_str) 
-        
-        if sheet and jobs_list:
+        # 5. SAVE TO GOOGLE SHEETS (Optional - kept from your old code)
+        if sheet and formatted_jobs:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            for job in jobs_list:
-                row = [timestamp, candidate_name, job.get('title'), job.get('company'), job.get('location'), job.get('job_url')]
+            for job in formatted_jobs:
+                row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
                 try: sheet.append_row(row)
-                except: pass 
+                except: pass
 
-        return jsonify(jobs_list)
+        return jsonify(formatted_jobs)
 
     except Exception as e:
-        print(f"Job Error: {e}")
+        print(f"API Error: {e}")
         return jsonify({"error": str(e)}), 500
-
+        
 @app.route('/generate_csv', methods=['POST'])
 def generate_csv():
     data = request.json

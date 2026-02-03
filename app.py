@@ -39,17 +39,17 @@ except Exception as e:
 class BVnP_PDF(FPDF):
     def header(self):
         # 1. Full Width Blue Header (100% Width)
-        self.set_fill_color(30, 58, 138) # BVnP Blue
-        self.rect(0, 0, 210, 35, 'F')    # Reduced height to 35
+        self.set_fill_color(30, 58, 138) 
+        
+        # DELETE THIS LINE TO REMOVE BLUE BACKGROUND:
+        # self.rect(0, 0, 210, 35, 'F')  <-- Comment this out!
         
         # 2. Add Logo (Centered, Larger)
         logo_path = os.path.join(app.root_path, 'static', 'logo.png')
         if os.path.exists(logo_path):
-            # BIGGER LOGO: w=90, CENTERED X=60
             self.image(logo_path, x=60, y=2, w=90)
             
-        self.ln(45) 
-
+        self.ln(45)
     def footer(self):
         self.set_y(-40)
         col1, col2, col3, col4, col5 = 10, 50, 90, 130, 165
@@ -241,45 +241,40 @@ def search_jobs():
     if not keywords: return jsonify({"error": "No keywords"}), 400
 
     # 1. SETUP JOOBLE
-    # Ideally, get this from environment variables: os.environ.get("JOOBLE_KEY")
-    # For now, you can paste it here to test, but move to Env Vars for security later.
     API_KEY = os.environ.get("JOOBLE_KEY") 
     BASE_URL = "https://jooble.org/api/"
     
     # 2. PREPARE REQUEST
-    # Jooble likes a single string of keywords
     keyword_string = " ".join(keywords)
-    
-    payload = {
-        "keywords": keyword_string,
-        "location": "Netherlands"
-    }
+    payload = { "keywords": keyword_string, "location": "Netherlands" }
     
     print(f"🔎 Searching Jooble for: {keyword_string}")
 
     try:
         response = requests.post(BASE_URL + API_KEY, json=payload)
+        
+        # Check if API failed (e.g. invalid key)
+        if response.status_code != 200:
+             return jsonify({"error": f"Jooble API Error: {response.status_code}"}), 500
+
         jooble_data = response.json()
         raw_jobs = jooble_data.get('jobs', [])
 
-        # --- NEW: STRICT FILTERING LOGIC ---
-        forbidden_titles = ["recruiter", "talent acquisition", "hr manager", "floor manager", "financial analyst"]
-        forbidden_companies = ["agency", "werving", "selectie"]
+        # --- STRICT FILTERING LOGIC ---
+        forbidden_titles = ["recruiter", "talent acquisition", "hr manager", "floor manager", "financial analyst", "accountant"]
+        forbidden_companies = ["agency", "werving", "selectie", "recruitment"]
 
         formatted_jobs = []
         for job in raw_jobs:
             title = job.get('title', '').lower()
             company = job.get('company', '').lower()
             
-            # 1. Check if a forbidden word is in the TITLE
-            if any(bad_word in title for bad_word in forbidden_titles):
-                continue # Skip this job
-                
-            # 2. Check if a forbidden word is in the COMPANY
-            if any(bad_word in company for bad_word in forbidden_companies):
-                continue # Skip this job
+            # 1. Filter by Title
+            if any(bad in title for bad in forbidden_titles): continue
+            # 2. Filter by Company
+            if any(bad in company for bad in forbidden_companies): continue
 
-            # 3. If it passes, add it!
+            # 3. Add Valid Job
             formatted_jobs.append({
                 "title": job.get('title', 'No Title'),
                 "company": job.get('company', 'Unknown'),
@@ -287,15 +282,14 @@ def search_jobs():
                 "job_url": job.get('link'),
                 "description": job.get('snippet', '') 
             })
+
+        # --- SAVE TO SHEETS (Corrected Indentation) ---
         if sheet and formatted_jobs:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for job in formatted_jobs:
                 row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
                 try: sheet.append_row(row)
                 except: pass
-    
-
-        # ... (save to sheets code) ...
         
         return jsonify(formatted_jobs)
 

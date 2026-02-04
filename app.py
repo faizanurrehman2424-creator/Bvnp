@@ -133,55 +133,66 @@ def ai_process_cv(text):
         TASKS:
         1. Identify Real Name.
         2. ANONYMIZE content (Remove Name, Email, Phone, Address, LinkedIn).
-        3. Identify Seniority (Junior, Medior, Senior).
-        4. Generate Search Data:
-           - "job_titles": Generate 2 STANDARD, BROAD job titles for search engines.
-             RULES: 
-             - Max 3 words per title.
-             - NO brackets like "(IT/Data)". 
-             - NO seniority terms like "Medior" or "Junior" in the title (we filter that separately).
-             - Example: Use "Business Analyst", NOT "Medior Business Analyst (Finance)".
-           - "keywords_to_avoid": Terms to exclude (e.g. "Junior", "Intern").
+        3. Identify Seniority.
+        4. Generate Search Data (Job Titles & Avoid List).
 
-        CRITICAL: Populate "structured_cv" fully. Rewrite experience/education.
+        CRITICAL: You MUST populate the "structured_cv" first. Do not summarize; keep the details.
 
         RETURN JSON ONLY:
         {{
-            "real_name": "Name",
-            "job_titles": ["Title1", "Title2"],
-            "keywords_to_avoid": ["Avoid1", "Avoid2"],
             "structured_cv": {{
-                "role_title": "Role Title",
-                "summary": "Summary...",
+                "role_title": "The Anonymized Role Title",
+                "summary": "Anonymized professional summary...",
                 "skills": ["Skill1", "Skill2"],
                 "languages": ["Lang1"],
                 "experience": [
-                    {{ "title": "Job Title", "company": "Company", "dates": "Dates", "description": "Full details..." }}
+                    {{ "title": "Job Title", "company": "Company/Industry", "dates": "Dates", "description": "Full description..." }}
                 ],
                 "education": [
                     {{ "degree": "Degree", "school": "School", "dates": "Dates" }}
                 ]
-            }}
+            }},
+            "real_name": "Name",
+            "job_titles": ["Title1", "Title2"],
+            "keywords_to_avoid": ["Avoid1", "Avoid2"]
         }}
         """
         
+        # FIX: Increase output limit to 8192 tokens (prevents cutoff on long CVs)
         response = model.generate_content(
             prompt,
-            generation_config={"response_mime_type": "application/json"}
+            generation_config={
+                "response_mime_type": "application/json",
+                "max_output_tokens": 8192 
+            }
         )
         
-        print(f"--- 2. AI RESPONSE: {response.text[:100]}... ---")
-        return json.loads(response.text)
+        data = json.loads(response.text)
+        
+        # --- SANITY CHECK ---
+        # If AI returned empty experience, let's at least put something in the PDF
+        if not data.get("structured_cv", {}).get("experience"):
+            print("⚠️ AI returned empty experience! Using fallback.")
+            data["structured_cv"]["experience"] = [
+                {
+                    "title": "Experience Section",
+                    "company": "See Summary", 
+                    "dates": "Present",
+                    "description": "The AI extracted skills but could not parse the full experience history. Please refer to the original CV."
+                }
+            ]
+            
+        return data
 
     except Exception as e:
         print(f"!!! AI ERROR: {e} !!!")
         return {
             "real_name": "Error", 
-            "job_titles": ["Business Analyst", "Data Consultant"], # Safer fallback
+            "job_titles": ["Business Analyst"], 
             "keywords_to_avoid": [],
             "structured_cv": {
                 "role_title": "Error Processing CV",
-                "summary": "Error",
+                "summary": "The AI could not process this file. Please try again.",
                 "skills": [],
                 "languages": [],
                 "experience": [],

@@ -11,6 +11,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import requests
 from serpapi import GoogleSearch
+import re
 
 app = Flask(__name__)
 
@@ -121,38 +122,41 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 def ai_process_cv(text):
-    print(f"--- 1. SENDING {len(text)} CHARS TO AI ---") # Debug print
+    print(f"--- 1. SENDING {len(text)} CHARS TO AI ---")
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
-        You are an expert Headhunter and CV Anonymizer.
+        You are an expert Headhunter.
         Input CV Text: {text}
 
         TASKS:
         1. Identify Real Name.
-        2. ANONYMIZE content (Remove Name, Email, Phone, Address, LinkedIn Links).
-        3. Determine the candidate's seniority (Junior, Medior, Senior, Lead).
-        4. Generate 2 distinct lists for searching:
-           - "job_titles": The 3 best job titles for them (e.g. "Senior React Developer").
-           - "keywords_to_avoid": Terms that contradict their profile.
+        2. ANONYMIZE content (Remove Name, Email, Phone, Address, LinkedIn).
+        3. Identify Seniority (Junior, Medior, Senior).
+        4. Generate Search Data:
+           - "job_titles": Generate 2 STANDARD, BROAD job titles for search engines.
+             RULES: 
+             - Max 3 words per title.
+             - NO brackets like "(IT/Data)". 
+             - NO seniority terms like "Medior" or "Junior" in the title (we filter that separately).
+             - Example: Use "Business Analyst", NOT "Medior Business Analyst (Finance)".
+           - "keywords_to_avoid": Terms to exclude (e.g. "Junior", "Intern").
 
-        CRITICAL INSTRUCTION:
-        You MUST populate the "structured_cv" object with the FULL anonymized content. 
-        Do not summarize. Rewrite the experience and education fully.
+        CRITICAL: Populate "structured_cv" fully. Rewrite experience/education.
 
-        RETURN JSON ONLY using this schema:
+        RETURN JSON ONLY:
         {{
             "real_name": "Name",
             "job_titles": ["Title1", "Title2"],
             "keywords_to_avoid": ["Avoid1", "Avoid2"],
             "structured_cv": {{
-                "role_title": "The Anonymized Role Title",
-                "summary": "Anonymized professional summary...",
+                "role_title": "Role Title",
+                "summary": "Summary...",
                 "skills": ["Skill1", "Skill2"],
                 "languages": ["Lang1"],
                 "experience": [
-                    {{ "title": "Job Title", "company": "Company (or Industry)", "dates": "Dates", "description": "Full description..." }}
+                    {{ "title": "Job Title", "company": "Company", "dates": "Dates", "description": "Full details..." }}
                 ],
                 "education": [
                     {{ "degree": "Degree", "school": "School", "dates": "Dates" }}
@@ -166,21 +170,19 @@ def ai_process_cv(text):
             generation_config={"response_mime_type": "application/json"}
         )
         
-        # Debug: Print the first 100 chars of response to check if it's empty
         print(f"--- 2. AI RESPONSE: {response.text[:100]}... ---")
-        
         return json.loads(response.text)
 
     except Exception as e:
         print(f"!!! AI ERROR: {e} !!!")
         return {
             "real_name": "Error", 
-            "job_titles": ["Developer"],
+            "job_titles": ["Business Analyst", "Data Consultant"], # Safer fallback
             "keywords_to_avoid": [],
             "structured_cv": {
                 "role_title": "Error Processing CV",
-                "summary": "The AI could not process this file. Please try again.",
-                "skills": ["Error"],
+                "summary": "Error",
+                "skills": [],
                 "languages": [],
                 "experience": [],
                 "education": []
@@ -260,8 +262,6 @@ def download_pdf():
 @app.route('/search_jobs', methods=['POST'])
 def search_jobs():
     data = request.json
-    
-    # 1. Get the lists from Frontend
     job_titles = data.get('job_titles', [])
     neg_keywords = data.get('negative_keywords', [])
     candidate_name = data.get('real_name', 'Unknown')
@@ -270,15 +270,27 @@ def search_jobs():
 
     SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
     
-    # 2. CONSTRUCT SMART QUERY
-    titles_query = f"({' OR '.join(job_titles[:2])})" 
+    # --- CLEANING STEP (NEW) ---
+    # Remove brackets, slashes, and extra spaces to make Google happy
+    clean_titles = []
+    for t in job_titles[:2]:
+        # Remove text inside brackets: "Analyst (IT)" -> "Analyst"
+        t = re.sub(r'\(.*?\)', '', t)
+        # Remove slashes: "Analyst/Owner" -> "Analyst Owner"
+        t = t.replace('/', ' ')
+        # Remove extra spaces
+        t = t.strip()
+        clean_titles.append(t)
+    
+    # Construct OR Query: "(Title1 OR Title2)"
+    titles_query = f"({' OR '.join(clean_titles)})" 
     
     defaults = ["recruitment", "agency", "staffing"]
     all_negatives = list(set(neg_keywords + defaults)) 
     neg_query = " -" + " -".join(all_negatives)
     
     smart_query = titles_query + neg_query
-    broad_query = titles_query
+    broad_query = titles_query # Fallback is just the cleaned titles
 
     print(f"🔎 Smart Query: {smart_query}")
 
@@ -291,14 +303,13 @@ def search_jobs():
     }
 
     try:
-        # --- ATTEMPT 1: SMART SEARCH ---
+        # ATTEMPT 1: SMART SEARCH
         params["q"] = smart_query
         search = GoogleSearch(params)
         results = search.get_dict()
-        
         jobs_results = results.get("jobs_results", []) if "error" not in results else []
 
-        # --- ATTEMPT 2: BROAD SEARCH (Fallback) ---
+        # ATTEMPT 2: BROAD SEARCH
         if not jobs_results:
             print(f"🔄 Switching to Broad Search: {broad_query}")
             params["q"] = broad_query
@@ -306,7 +317,7 @@ def search_jobs():
             results = search.get_dict()
             jobs_results = results.get("jobs_results", [])
 
-        # --- PROCESS RESULTS ---
+        # Process Results
         formatted_jobs = []
         for job in jobs_results:
             apply_options = job.get("apply_options", [])
@@ -320,15 +331,13 @@ def search_jobs():
                 "description": job.get("description", "No description available.")
             })
 
-        # --- 3. SAVE TO SHEETS (FIXED) ---
+        # Save to Sheets
         if sheet and formatted_jobs:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for job in formatted_jobs:
                 row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
-                try: 
-                    sheet.append_row(row)
-                except Exception as e:
-                    print(f"Sheet Error: {e}") # Print error if sheet fails
+                try: sheet.append_row(row)
+                except: pass
             
         return jsonify(formatted_jobs)
 

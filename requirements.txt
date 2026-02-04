@@ -9,3 +9,4 @@ pypdf
 fpdf
 werkzeug
 requests
+google-search-results

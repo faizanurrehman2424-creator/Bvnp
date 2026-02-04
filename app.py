@@ -268,13 +268,13 @@ def search_jobs():
     raw_titles = data.get('job_titles', [])
     candidate_name = data.get('real_name', 'Unknown')
     
-    # Clean titles: Remove brackets and slashes
+    # Clean titles
     search_queries = []
     for t in raw_titles[:2]: 
         t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
         search_queries.append(t)
     
-    # Add a fallback query if the AI was too specific
+    # Add a fallback query
     search_queries.append("Software Engineer") 
 
     # 2. SETUP JSEARCH (RAPIDAPI)
@@ -286,30 +286,36 @@ def search_jobs():
 
     found_jobs = []
     
-    # 3. SEQUENTIAL SEARCH (Try queries one by one until we get results)
+    # 3. SEQUENTIAL SEARCH
     for query in search_queries:
         if not query: continue
         
-        print(f"🔎 Trying JSearch Query: {query}") # Debug print
+        print(f"🔎 Trying JSearch Query: {query}") 
         
+        # --- FIX: REMOVED DATE FILTER ---
         querystring = {
             "query": f"{query} in Netherlands", 
             "page": "1",
-            "num_pages": "1", 
-            "date_posted": "month" # Widen date range to 'month' to ensure results
+            "num_pages": "1"
         }
 
         try:
             response = requests.get(url, headers=headers, params=querystring)
+            
+            # Print response text if it fails, so we can debug in Render logs
+            if response.status_code != 200:
+                print(f"❌ API STATUS {response.status_code}: {response.text}")
+                continue
+
             data = response.json()
             raw_jobs = data.get('data', [])
             
             if raw_jobs:
                 print(f"✅ Found {len(raw_jobs)} jobs for '{query}'")
                 found_jobs = raw_jobs
-                break # Stop searching if we found jobs!
+                break 
             else:
-                print(f"⚠️ No jobs found for '{query}', trying next...")
+                print(f"⚠️ No jobs found for '{query}'. Response: {data}")
                 
         except Exception as e:
             print(f"API Error for {query}: {e}")
@@ -323,14 +329,13 @@ def search_jobs():
         title = job.get('job_title', '').lower()
         company = job.get('employer_name', '').lower()
         
-        # Simple Filter: Skip known agency words
         if any(bad in title for bad in forbidden): continue
         if any(bad in company for bad in forbidden): continue
 
         formatted_jobs.append({
             "title": job.get('job_title'),
             "company": job.get('employer_name'),
-            "location": f"{job.get('job_city')}, {job.get('job_country')}",
+            "location": f"{job.get('job_city', 'Netherlands')}, {job.get('job_country', '')}",
             "job_url": job.get('job_apply_link'), 
             "description": job.get('job_description', '')[:300] + "..." 
         })

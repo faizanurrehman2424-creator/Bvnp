@@ -121,6 +121,7 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 def ai_process_cv(text):
+    print(f"--- 1. SENDING {len(text)} CHARS TO AI ---") # Debug print
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         
@@ -134,11 +135,13 @@ def ai_process_cv(text):
         3. Determine the candidate's seniority (Junior, Medior, Senior, Lead).
         4. Generate 2 distinct lists for searching:
            - "job_titles": The 3 best job titles for them (e.g. "Senior React Developer").
-           - "keywords_to_avoid": Terms that contradict their profile (e.g. "Junior", "Agency").
+           - "keywords_to_avoid": Terms that contradict their profile.
 
-        CRITICAL: You MUST popuate the "structured_cv" object with the anonymized data. Do not leave it empty.
+        CRITICAL INSTRUCTION:
+        You MUST populate the "structured_cv" object with the FULL anonymized content. 
+        Do not summarize. Rewrite the experience and education fully.
 
-        RETURN JSON ONLY. Follow this schema exactly:
+        RETURN JSON ONLY using this schema:
         {{
             "real_name": "Name",
             "job_titles": ["Title1", "Title2"],
@@ -149,34 +152,35 @@ def ai_process_cv(text):
                 "skills": ["Skill1", "Skill2"],
                 "languages": ["Lang1"],
                 "experience": [
-                    {{ "title": "Job Title", "company": "Company (or Industry if confidential)", "dates": "2020-2022", "description": "Full description..." }}
+                    {{ "title": "Job Title", "company": "Company (or Industry)", "dates": "Dates", "description": "Full description..." }}
                 ],
                 "education": [
-                    {{ "degree": "Degree", "school": "School", "dates": "2019" }}
+                    {{ "degree": "Degree", "school": "School", "dates": "Dates" }}
                 ]
             }}
         }}
         """
         
-        # FORCE JSON MODE
         response = model.generate_content(
             prompt,
             generation_config={"response_mime_type": "application/json"}
         )
         
+        # Debug: Print the first 100 chars of response to check if it's empty
+        print(f"--- 2. AI RESPONSE: {response.text[:100]}... ---")
+        
         return json.loads(response.text)
 
     except Exception as e:
-        print(f"AI Error: {e}")
+        print(f"!!! AI ERROR: {e} !!!")
         return {
             "real_name": "Error", 
             "job_titles": ["Developer"],
             "keywords_to_avoid": [],
-            # Fallback so PDF doesn't crash
             "structured_cv": {
                 "role_title": "Error Processing CV",
                 "summary": "The AI could not process this file. Please try again.",
-                "skills": [],
+                "skills": ["Error"],
                 "languages": [],
                 "experience": [],
                 "education": []
@@ -258,8 +262,8 @@ def search_jobs():
     data = request.json
     
     # 1. Get the lists from Frontend
-    job_titles = data.get('job_titles', [])     # e.g. ["Senior Java Dev", "Team Lead"]
-    neg_keywords = data.get('negative_keywords', []) # e.g. ["Junior", "Intern", "agency"]
+    job_titles = data.get('job_titles', [])
+    neg_keywords = data.get('negative_keywords', [])
     candidate_name = data.get('real_name', 'Unknown')
     
     if not job_titles: return jsonify({"error": "No job titles provided"}), 400
@@ -267,21 +271,13 @@ def search_jobs():
     SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
     
     # 2. CONSTRUCT SMART QUERY
-    # Logic: "(Title1 OR Title2) -Avoid1 -Avoid2 -Avoid3"
-    
-    # Create the OR part: "(Senior Java Dev OR Team Lead)"
     titles_query = f"({' OR '.join(job_titles[:2])})" 
     
-    # Create the Negative part: "-Junior -Intern -agency"
-    # Ensure we always add basic agency filters even if AI forgot them
     defaults = ["recruitment", "agency", "staffing"]
-    all_negatives = list(set(neg_keywords + defaults)) # Remove duplicates
+    all_negatives = list(set(neg_keywords + defaults)) 
     neg_query = " -" + " -".join(all_negatives)
     
-    # Combine them
     smart_query = titles_query + neg_query
-    
-    # Fallback Query (If strict search finds nothing)
     broad_query = titles_query
 
     print(f"🔎 Smart Query: {smart_query}")
@@ -300,11 +296,7 @@ def search_jobs():
         search = GoogleSearch(params)
         results = search.get_dict()
         
-        if "error" in results:
-            print(f"⚠️ Smart search failed: {results['error']}")
-            jobs_results = []
-        else:
-            jobs_results = results.get("jobs_results", [])
+        jobs_results = results.get("jobs_results", []) if "error" not in results else []
 
         # --- ATTEMPT 2: BROAD SEARCH (Fallback) ---
         if not jobs_results:
@@ -328,10 +320,15 @@ def search_jobs():
                 "description": job.get("description", "No description available.")
             })
 
-        # Save to Sheets logic (kept same)...
+        # --- 3. SAVE TO SHEETS (FIXED) ---
         if sheet and formatted_jobs:
-             # ... your existing sheet code ...
-             pass
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for job in formatted_jobs:
+                row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
+                try: 
+                    sheet.append_row(row)
+                except Exception as e:
+                    print(f"Sheet Error: {e}") # Print error if sheet fails
             
         return jsonify(formatted_jobs)
 

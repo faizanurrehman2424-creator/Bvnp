@@ -20,17 +20,23 @@
         .fade-in {
             opacity: 1;
         }
+        
+        /* Fix for logo background */
+        img.logo-fix {
+            background-color: transparent !important;
+            box-shadow: none !important;
+        }
     </style>
 </head>
 <body class="bg-gray-50 font-sans">
 
     <div class="gradient-bg text-white py-12 px-6 text-center shadow-lg">
         <div class="flex justify-center mb-6">
-            <div >
-                <img src="{{ url_for('static', filename='logo.png') }}" alt="BVnP Logo" class="h-16 w-auto object-contain">
+            <div>
+                <img src="{{ url_for('static', filename='logo.png') }}" alt="BVnP Logo" class="h-16 w-auto object-contain logo-fix">
             </div>
         </div>
-        <p class="text-blue-100">Secure Anonymization & Automated Job Matching</p>
+        <p class="text-blue-100">Secure Anonymization & Smart Job Matching</p>
     </div>
 
     <div class="max-w-4xl mx-auto p-6 space-y-8">
@@ -45,29 +51,44 @@
 
         <div id="processBtnContainer" class="text-center hidden-section">
             <button onclick="processCV()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transform transition hover:scale-105 flex items-center justify-center mx-auto gap-2">
-                <i class="fas fa-magic"></i> Anonymize CV
+                <i class="fas fa-magic"></i> Anonymize CV & Analyze
             </button>
         </div>
 
         <div id="loader" class="hidden-section text-center py-8">
             <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-            <p class="text-gray-600 animate-pulse">AI is reading the CV & extracting skills...</p>
+            <p class="text-gray-600 animate-pulse">AI is reading the CV, extracting skills, and identifying seniority...</p>
         </div>
 
         <div id="resultSection" class="hidden-section bg-white rounded-xl shadow-md overflow-hidden">
             <div class="bg-gray-100 p-4 border-b border-gray-200 flex justify-between items-center">
-                <h3 class="font-bold text-green-700"><i class="fas fa-check-circle"></i> Processing Complete</h3>
+                <h3 class="font-bold text-green-700"><i class="fas fa-check-circle"></i> Analysis Complete</h3>
                 <span id="realNameBadge" class="bg-yellow-100 text-yellow-800 text-xs px-2 py-1 rounded-full border border-yellow-200">Processing...</span>
             </div>
-            <div class="p-8 text-center">
-                <p class="text-gray-600 mb-6">The CV has been successfully analyzed and anonymized. Choose an action below:</p>
+            
+            <div class="p-8">
+                <div class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
+                    <h4 class="font-bold text-blue-800 mb-2">AI Suggested Strategy:</h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                        <div>
+                            <span class="font-semibold text-gray-600">Target Roles:</span>
+                            <ul id="displayTitles" class="list-disc list-inside text-gray-800 mt-1"></ul>
+                        </div>
+                        <div>
+                            <span class="font-semibold text-gray-600">Avoid Terms:</span>
+                            <ul id="displayAvoid" class="list-disc list-inside text-red-600 mt-1"></ul>
+                        </div>
+                    </div>
+                </div>
+
+                <p class="text-center text-gray-600 mb-6">Choose an action below:</p>
 
                 <div class="flex gap-4 justify-center">
                     <button onclick="downloadPDF()" class="bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-8 rounded-lg shadow-lg transition flex items-center gap-2">
-                        <i class="fas fa-file-pdf fa-lg"></i> Download PDF
+                        <i class="fas fa-file-pdf fa-lg"></i> Download Anonymized PDF
                     </button>
                     <button onclick="startJobSearch()" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 px-8 rounded-lg shadow-lg transition flex items-center gap-2">
-                        <i class="fas fa-search-dollar fa-lg"></i> Search Jobs
+                        <i class="fas fa-search-dollar fa-lg"></i> Smart Job Search
                     </button>
                 </div>
             </div>
@@ -76,7 +97,7 @@
         <div id="jobSection" class="hidden-section">
             <div class="bg-white rounded-xl shadow-md p-6">
                 <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-2xl font-bold text-gray-800">Job Matches Found</h2>
+                    <h2 class="text-2xl font-bold text-gray-800">Smart Matches Found</h2>
                     <button onclick="downloadCSV()" class="text-blue-600 hover:underline font-semibold">
                         <i class="fas fa-file-csv"></i> Export CSV
                     </button>
@@ -84,7 +105,7 @@
 
                 <div id="jobLoader" class="text-center py-8 hidden">
                     <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto"></div>
-                    <p class="text-gray-500 mt-2">Scraping LinkedIn, Indeed & Glassdoor...</p>
+                    <p class="text-gray-500 mt-2">Searching Google Jobs (filtering agencies)...</p>
                 </div>
 
                 <div class="overflow-x-auto">
@@ -111,8 +132,11 @@
     </div>
 
     <script>
+        // GLOBAL STATE
         let currentData = null; // Stores AI response
-        let currentJobs = null; // Stores scraped jobs
+        let currentJobs = null; // Stores job results
+        let currentJobTitles = []; 
+        let currentNegativeKeywords = [];
 
         // 1. Handle File Selection
         function handleFileSelect(input) {
@@ -125,8 +149,6 @@
                 const btnContainer = document.getElementById('processBtnContainer');
                 btnContainer.style.display = 'block';
                 setTimeout(() => btnContainer.classList.add('fade-in'), 10);
-
-                // Scroll slightly
                 btnContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
         }
@@ -153,30 +175,41 @@
 
                 if (data.error) throw new Error(data.error);
 
-                currentData = data; // Store for later use
+                // STORE DATA FROM AI
+                currentData = data;
+                currentJobTitles = data.job_titles || [];
+                currentNegativeKeywords = data.keywords_to_avoid || [];
 
-                // Show Results
+                // Show Results UI
                 loader.style.display = 'none';
                 const resultSection = document.getElementById('resultSection');
                 resultSection.style.display = 'block';
                 setTimeout(() => resultSection.classList.add('fade-in'), 10);
 
-                // Populate Name Badge (Internal only)
+                // Update UI Badges
                 document.getElementById('realNameBadge').textContent = `Candidate: ${data.real_name}`;
+                
+                // Show AI Insights
+                const titleList = document.getElementById('displayTitles');
+                titleList.innerHTML = currentJobTitles.length ? currentJobTitles.map(t => `<li>${t}</li>`).join('') : '<li>General Search</li>';
+                
+                const avoidList = document.getElementById('displayAvoid');
+                avoidList.innerHTML = currentNegativeKeywords.length ? currentNegativeKeywords.map(k => `<li>${k}</li>`).join('') : '<li>Standard Filters</li>';
 
             } catch (error) {
-                alert('Error: ' + error.message);
+                alert('Analysis Error: ' + error.message);
                 loader.style.display = 'none';
+                document.getElementById('processBtnContainer').style.display = 'block'; // Allow retry
             }
         }
 
-        // 3. Download PDF (Calls Backend Template Engine)
+        // 3. Download PDF
         async function downloadPDF() {
             if (!currentData) return;
 
             const btn = document.querySelector('button[onclick="downloadPDF()"]');
             const originalText = btn.innerHTML;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Genereren...';
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
 
             try {
                 const response = await fetch('/download_pdf', {
@@ -200,8 +233,7 @@
             }
         }
 
-        // 4. Search Jobs
-        // 4. Search Jobs (Updated to fix "forEach" crash)
+        // 4. Start Smart Job Search
         async function startJobSearch() {
             if (!currentData) return;
 
@@ -212,51 +244,45 @@
 
             const jobLoader = document.getElementById('jobLoader');
             jobLoader.classList.remove('hidden');
-
-            // Clear previous table to avoid confusion
             const tbody = document.getElementById('jobTableBody');
             tbody.innerHTML = '';
 
             try {
+                // SEND SMART PAYLOAD
+                const payload = {
+                    job_titles: currentJobTitles,
+                    negative_keywords: currentNegativeKeywords,
+                    keywords: currentData.search_keywords, // Fallback
+                    real_name: currentData.real_name
+                };
+
                 const response = await fetch('/search_jobs', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        keywords: currentData.search_keywords,
-                        real_name: currentData.real_name
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 const data = await response.json();
 
-                // FIX 1: Check if backend sent an error
-                if (data.error) {
-                    throw new Error(data.error);
-                }
+                if (data.error) throw new Error(data.error);
+                if (!Array.isArray(data)) throw new Error("Invalid data format");
 
-                // FIX 2: Ensure data is actually a list (Array)
-                if (!Array.isArray(data)) {
-                    throw new Error("Received invalid data format from server");
-                }
-
-                const jobs = data;
-                currentJobs = jobs; // Store for CSV export
-
+                currentJobs = data;
                 jobLoader.classList.add('hidden');
 
-                if (jobs.length === 0) {
+                if (data.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-500">No matching jobs found. Try different keywords.</td></tr>';
                     return;
                 }
 
-                jobs.forEach(job => {
+                data.forEach(job => {
                     const row = `
                         <tr class="border-b hover:bg-gray-50">
                             <td class="p-3 font-medium">${job.title}</td>
                             <td class="p-3 text-gray-500">${job.company}</td>
                             <td class="p-3 text-gray-500">${job.location}</td>
                             <td class="p-3">
-                                <a href="${job.job_url}" target="_blank" class="text-blue-600 hover:text-blue-800 text-sm font-bold">Job Link &rarr;</a>
+                                <a href="${job.job_url}" target="_blank" class="text-blue-600 hover:text-blue-800 text-sm font-bold bg-blue-50 px-3 py-1 rounded hover:bg-blue-100">Apply &rarr;</a>
                             </td>
                         </tr>
                     `;
@@ -264,8 +290,7 @@
                 });
 
             } catch (error) {
-                // Show the actual error message to the user
-                alert('Job search failed: ' + error.message);
+                alert('Search failed: ' + error.message);
                 jobLoader.classList.add('hidden');
                 tbody.innerHTML = `<tr><td colspan="4" class="p-4 text-center text-red-500 font-bold">Error: ${error.message}</td></tr>`;
             }
@@ -274,18 +299,16 @@
         // 5. Download CSV
         async function downloadCSV() {
             if (!currentJobs) return;
-
             const response = await fetch('/generate_csv', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ jobs: currentJobs })
             });
-
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'Job_Matches.csv';
+            a.download = 'Smart_Matches.csv';
             document.body.appendChild(a);
             a.click();
             a.remove();

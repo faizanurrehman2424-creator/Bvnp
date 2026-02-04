@@ -40,7 +40,7 @@ except Exception as e:
 class BVnP_PDF(FPDF):
     def header(self):
         self.set_fill_color(30, 58, 138)
-        # self.rect(0, 0, 210, 35, 'F') # Blue background removed
+        # self.rect(0, 0, 210, 35, 'F') 
         
         logo_path = os.path.join(app.root_path, 'static', 'logo.png')
         if os.path.exists(logo_path):
@@ -113,7 +113,6 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 def ai_process_cv(text):
-    # Debug: Check if PDF text exists
     print(f"--- 1. PDF TEXT LENGTH: {len(text)} ---")
     
     try:
@@ -159,7 +158,31 @@ def ai_process_cv(text):
             }
         )
         
-        data = json.loads(response.text)
+        # --- NEW: ROBUST JSON PARSER ---
+        # Sometimes AI cuts off. We try to fix it or fallback safely.
+        try:
+            data = json.loads(response.text)
+        except json.JSONDecodeError:
+            print("⚠️ JSON Cutoff Detected! Attempting simple repair...")
+            # If JSON is cut off, we just assume the important parts (structured_cv) are there
+            # because we put them FIRST in the schema.
+            # We will try to close the brackets manually to salvage data.
+            safe_text = response.text.strip()
+            if not safe_text.endswith("}"):
+                safe_text += '}' # Try closing main object
+            if not safe_text.endswith("}"):
+                safe_text += '}'
+            
+            try:
+                data = json.loads(safe_text)
+            except:
+                print("❌ Repair failed. Returning partial/error data.")
+                return {
+                    "real_name": "Unknown",
+                    "job_titles": ["Developer"],
+                    "keywords_to_avoid": [],
+                    "structured_cv": {"summary": "Error: CV too long for AI processing."}
+                }
         
         # Fallback if experience is empty
         if not data.get("structured_cv", {}).get("experience"):

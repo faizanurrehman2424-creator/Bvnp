@@ -254,10 +254,21 @@ def search_jobs():
 
     SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
     
-    # Define Queries
-    base_query = " ".join(keywords)
+    # --- THE FIX IS HERE ---
+    # Only use the first 2 keywords. 
+    # Searching for 5+ skills at once causes "0 Results" because no job matches ALL of them.
+    # We join them with " OR " so Google looks for EITHER skill, not both required.
+    
+    # Take top 2 keywords
+    main_skills = keywords[:2] 
+    
+    # Construct "OR" query: "(Skill1 OR Skill2)"
+    # This finds jobs that match *at least one* of your top skills.
+    base_query = f"({' OR '.join(main_skills)})"
+    
     # Query 1: Strict (Preferred)
     strict_query = f"{base_query} -recruitment -agency -staffing"
+    
     # Query 2: Broad (Fallback)
     broad_query = base_query
 
@@ -277,7 +288,6 @@ def search_jobs():
         search = GoogleSearch(params)
         results = search.get_dict()
         
-        # Check for empty results error
         if "error" in results:
             print(f"⚠️ Strict search failed: {results['error']}")
             jobs_results = []
@@ -295,7 +305,7 @@ def search_jobs():
         # --- PROCESS RESULTS ---
         formatted_jobs = []
         for job in jobs_results:
-            # Extract Link (Handle multiple options)
+            # Extract Link
             apply_options = job.get("apply_options", [])
             link = "#"
             if apply_options:

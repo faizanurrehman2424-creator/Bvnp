@@ -11,6 +11,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import requests
+from serpapi import GoogleSearch
 
 app = Flask(__name__)
 
@@ -240,63 +241,70 @@ def search_jobs():
     
     if not keywords: return jsonify({"error": "No keywords"}), 400
 
-    # 1. SETUP JOOBLE
-    API_KEY = os.environ.get("JOOBLE_KEY") 
-    BASE_URL = "https://jooble.org/api/"
+    # 1. SETUP SERPAPI
+    # Get this from Environment Variables in Render
+    SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
     
-    # 2. PREPARE REQUEST
-    keyword_string = " ".join(keywords)
-    payload = { "keywords": keyword_string, "location": "Netherlands" }
+    # 2. CONSTRUCT QUERY
+    # We combine the keywords and add negative terms to filter out agencies
+    base_query = " ".join(keywords)
+    query_string = f"{base_query} -recruitment -agency -staffing"
     
-    print(f"🔎 Searching Jooble for: {keyword_string}")
+    print(f"🔎 SerpApi Searching: {query_string}")
+
+    params = {
+      "engine": "google_jobs",
+      "q": query_string,
+      "location": "Netherlands",
+      "hl": "en",  # Interface Language: English
+      "gl": "nl",  # Country: Netherlands
+      "api_key": SERPAPI_KEY
+    }
 
     try:
-        response = requests.post(BASE_URL + API_KEY, json=payload)
+        search = GoogleSearch(params)
+        results = search.get_dict()
         
-        # Check if API failed (e.g. invalid key)
-        if response.status_code != 200:
-             return jsonify({"error": f"Jooble API Error: {response.status_code}"}), 500
-
-        jooble_data = response.json()
-        raw_jobs = jooble_data.get('jobs', [])
-
-        # --- STRICT FILTERING LOGIC ---
-        forbidden_titles = ["recruiter", "talent acquisition", "hr manager", "floor manager", "financial analyst", "accountant"]
-        forbidden_companies = ["agency", "werving", "selectie", "recruitment"]
+        # Check for error in response
+        if "error" in results:
+            return jsonify({"error": results["error"]}), 500
+            
+        jobs_results = results.get("jobs_results", [])
 
         formatted_jobs = []
-        for job in raw_jobs:
-            title = job.get('title', '').lower()
-            company = job.get('company', '').lower()
+        for job in jobs_results:
             
-            # 1. Filter by Title
-            if any(bad in title for bad in forbidden_titles): continue
-            # 2. Filter by Company
-            if any(bad in company for bad in forbidden_companies): continue
+            # EXTRACT APPLY LINK
+            # Google often gives a list called "apply_options". We take the first one.
+            apply_options = job.get("apply_options", [])
+            link = "#"
+            if apply_options:
+                link = apply_options[0].get("link")
+            else:
+                # Fallback if no apply options exist
+                link = job.get("related_links", [{}])[0].get("link", "#")
 
-            # 3. Add Valid Job
             formatted_jobs.append({
-                "title": job.get('title', 'No Title'),
-                "company": job.get('company', 'Unknown'),
-                "location": job.get('location', 'Netherlands'),
-                "job_url": job.get('link'),
-                "description": job.get('snippet', '') 
+                "title": job.get("title"),
+                "company": job.get("company_name"),
+                "location": job.get("location"),
+                "job_url": link,
+                "description": job.get("description", "No description available.")
             })
 
-        # --- SAVE TO SHEETS (Corrected Indentation) ---
+        # 3. SAVE TO SHEETS (Optional)
         if sheet and formatted_jobs:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for job in formatted_jobs:
                 row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
                 try: sheet.append_row(row)
                 except: pass
-        
+            
         return jsonify(formatted_jobs)
 
     except Exception as e:
-        print(f"API Error: {e}")
-        return jsonify({"error": str(e)}), 500
-        
+        print(f"SerpApi Error: {e}")
+        return jsonify({"error": str(e)}), 500        
 @app.route('/generate_csv', methods=['POST'])
 def generate_csv():
     data = request.json

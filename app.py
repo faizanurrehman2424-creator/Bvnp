@@ -122,30 +122,43 @@ def extract_text_from_pdf(pdf_path):
 
 def ai_process_cv(text):
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
-        You are an expert Headhunter. Analyze this CV:
-        {text}
+        You are an expert Headhunter and CV Anonymizer.
+        Input CV Text: {text}
 
         TASKS:
         1. Identify Real Name.
-        2. ANONYMIZE content (Remove Name, Email, Phone).
+        2. ANONYMIZE content (Remove Name, Email, Phone, Address, LinkedIn Links).
         3. Determine the candidate's seniority (Junior, Medior, Senior, Lead).
         4. Generate 2 distinct lists for searching:
-           - "job_titles": The 3 best job titles for them (e.g. "Senior React Developer", "Frontend Lead").
-           - "keywords_to_avoid": Terms that contradict their profile. 
-             (e.g. If Senior, avoid "Junior", "Trainee". Always avoid "recruitment", "agency", "staffing").
+           - "job_titles": The 3 best job titles for them (e.g. "Senior React Developer").
+           - "keywords_to_avoid": Terms that contradict their profile (e.g. "Junior", "Agency").
 
-        RETURN JSON ONLY:
+        CRITICAL: You MUST popuate the "structured_cv" object with the anonymized data. Do not leave it empty.
+
+        RETURN JSON ONLY. Follow this schema exactly:
         {{
             "real_name": "Name",
             "job_titles": ["Title1", "Title2"],
-            "keywords_to_avoid": ["Junior", "Intern", "recruitment", "agency"],
-            "structured_cv": {{ ...keep your existing structure... }}
+            "keywords_to_avoid": ["Avoid1", "Avoid2"],
+            "structured_cv": {{
+                "role_title": "The Anonymized Role Title",
+                "summary": "Anonymized professional summary...",
+                "skills": ["Skill1", "Skill2"],
+                "languages": ["Lang1"],
+                "experience": [
+                    {{ "title": "Job Title", "company": "Company (or Industry if confidential)", "dates": "2020-2022", "description": "Full description..." }}
+                ],
+                "education": [
+                    {{ "degree": "Degree", "school": "School", "dates": "2019" }}
+                ]
+            }}
         }}
         """
         
+        # FORCE JSON MODE
         response = model.generate_content(
             prompt,
             generation_config={"response_mime_type": "application/json"}
@@ -157,10 +170,17 @@ def ai_process_cv(text):
         print(f"AI Error: {e}")
         return {
             "real_name": "Error", 
-            # Fallback data if AI fails
-            "job_titles": ["Developer", "Engineer"], 
-            "keywords_to_avoid": ["recruitment", "agency"],
-            "structured_cv": {"summary": "Error processing CV."}
+            "job_titles": ["Developer"],
+            "keywords_to_avoid": [],
+            # Fallback so PDF doesn't crash
+            "structured_cv": {
+                "role_title": "Error Processing CV",
+                "summary": "The AI could not process this file. Please try again.",
+                "skills": [],
+                "languages": [],
+                "experience": [],
+                "education": []
+            }
         }
         # --- ROUTES ---
 

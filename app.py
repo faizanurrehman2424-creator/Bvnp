@@ -165,10 +165,10 @@ def get_ai_scores(jobs, skills_list):
     """
     if not jobs or not skills_list: return jobs
 
-    # We only score the top 10 to keep it fast
+    # Only score top 10 to keep it fast
     jobs_to_score = jobs[:10]
     
-    # Create a mini-prompt with just Titles and Snippets
+    # Create prompt with Titles and Snippets
     job_text_block = ""
     for idx, job in enumerate(jobs_to_score):
         job_text_block += f"ID {idx}: {job['title']} at {job['company']} - {job['description']}\n"
@@ -198,7 +198,7 @@ def get_ai_scores(jobs, skills_list):
         response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
         score_data = json.loads(response.text)
         
-        # Merge scores back into jobs
+        # Merge scores back
         for item in score_data.get("scores", []):
             idx = item.get("id")
             if idx is not None and idx < len(jobs_to_score):
@@ -272,50 +272,80 @@ def search_jobs():
     data = request.json
     raw_titles = data.get('job_titles', [])
     candidate_name = data.get('real_name', 'Unknown')
-    candidate_skills = data.get('cv_skills', []) # <--- NEW: Receive Skills
+    candidate_skills = data.get('cv_skills', []) # Receive Skills
     
-    # 1. SMART QUERIES
+    # 1. SMART QUERIES (Onion Strategy)
     search_queries = []
     for t in raw_titles[:2]: 
         clean_t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
         if clean_t not in search_queries: search_queries.append(clean_t)
+        
         words = clean_t.split()
         if len(words) >= 2:
             short_t = " ".join(words[:2])
             if short_t not in search_queries: search_queries.append(short_t)
+    
     search_queries.append("Business Analyst") 
 
     # 2. JOOBLE FETCH
     JOOBLE_KEY = os.environ.get("JOOBLE_KEY")
     API_URL = "https://jooble.org/api/" + JOOBLE_KEY
+    
     raw_results = []
     seen_urls = set()
 
+    print(f"🔎 Search Plan: {search_queries}")
+    
     for title in search_queries:
         if len(raw_results) >= 25: break 
+        
+        print(f"🔎 Jooble Searching: {title}")
         payload = { "keywords": title, "location": "Netherlands", "page": 1 }
+
         try:
             response = requests.post(API_URL, json=payload)
             data = response.json()
             jobs = data.get('jobs', [])
+            
             if jobs:
+                print(f"✅ Found {len(jobs)} jobs for '{title}'")
                 for j in jobs:
                     if j.get('link') not in seen_urls:
                         raw_results.append(j)
                         seen_urls.add(j.get('link'))
-        except: continue
+        except Exception as e:
+            print(f"Jooble Error: {e}")
+            continue
 
-    # 3. FILTER & FORMAT
+    # 3. ULTRA-STRICT FILTERING (The Blocklist you liked)
     forbidden_words = [
-        "recruitment", "recruiter", "talent acquisition", "hr manager", "human resources", "headhunter", "agency", "staffing",
-        "supply chain", "logistics", "warehouse", "operations manager", "floor manager", "store manager", "cleaner", "driver",
-        "sales", "account manager", "marketing", "commercial", "financial", "accountant", "tax"
+        # Agencies
+        "recruitment", "recruiter", "talent acquisition", "hr manager", "human resources", 
+        "headhunter", "agency", "staffing", "werving", "selectie",
+        
+        # Non-Tech / Irrelevant Roles
+        "supply chain", "logistics", "warehouse", "operations manager", "floor manager", 
+        "store manager", "category manager", "facility", "coordinator", "commissioning",
+        "quality", "environmental", "audit", "compliance", "legal",
+        
+        # Sales & Marketing (Strict)
+        "sales", "account manager", "marketing", "commercial", "growth", "sme",
+        
+        # Finance
+        "financial", "accountant", "tax", "treasury", "controller",
+        
+        # Other Non-Tech
+        "cleaner", "driver", "mechanic", "nurse", "teacher", "internship", "stage"
     ]
     
     final_jobs = []
+    
     for job in raw_results:
         title = job.get('title', '').lower()
         company = job.get('company', '').lower()
+        link = job.get('link')
+
+        # FILTER: Block if any forbidden word is in the TITLE or COMPANY
         if any(bad in title for bad in forbidden_words): continue
         if any(bad in company for bad in forbidden_words): continue
         
@@ -323,16 +353,16 @@ def search_jobs():
             "title": job.get('title'),
             "company": job.get('company', 'Unknown'),
             "location": job.get('location', 'Netherlands'),
-            "job_url": job.get('link'),
+            "job_url": link,
             "description": job.get('snippet', ''),
-            "match_score": 0,       # Default
-            "match_reason": "Analyzing..." # Default
+            "match_score": 0,
+            "match_reason": "Analyzing..."
         })
 
-    final_jobs = final_jobs[:15] # Limit to 15 for scoring
+    # Limit to top 15 for scoring
+    final_jobs = final_jobs[:15]
 
-    # 4. AI SCORING (NEW STEP)
-    # We pass the list to Gemini to get match scores
+    # 4. AI SCORING
     if candidate_skills:
         print("🤖 calculating AI Match Scores...")
         final_jobs = get_ai_scores(final_jobs, candidate_skills)
@@ -352,7 +382,9 @@ def generate_csv():
     jobs = data.get('jobs', [])
     if not jobs: return jsonify({"error": "No jobs"}), 400
     df = pd.DataFrame(jobs)
-    return send_file(os.path.join(app.config['UPLOAD_FOLDER'], 'found_jobs.csv'), as_attachment=True)
+    csv_path = os.path.join(app.config['UPLOAD_FOLDER'], 'found_jobs.csv')
+    df.to_csv(csv_path, index=False)
+    return send_file(csv_path, as_attachment=True)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))

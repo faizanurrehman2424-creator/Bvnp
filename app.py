@@ -269,79 +269,81 @@ def search_jobs():
     candidate_name = data.get('real_name', 'Unknown')
     
     # Clean titles: Remove brackets and slashes
-    cleaned_titles = []
+    search_queries = []
     for t in raw_titles[:2]: 
-        # Remove anything in brackets and replace slashes
         t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
-        cleaned_titles.append(t)
+        search_queries.append(t)
     
-    # Construct Query: "Title1 OR Title2"
-    query = " OR ".join(cleaned_titles)
-    
-    if not query: 
-        query = "Developer" # Last resort fallback
-
-    print(f"🔎 JSearch Query: {query} in Netherlands")
+    # Add a fallback query if the AI was too specific
+    search_queries.append("Software Engineer") 
 
     # 2. SETUP JSEARCH (RAPIDAPI)
     url = "https://jsearch.p.rapidapi.com/search"
-    
-    querystring = {
-        "query": f"{query} in Netherlands", 
-        "page": "1",
-        "num_pages": "1", 
-        "date_posted": "week" # Fresh jobs only
-    }
-
-    # Get Key from Render Environment
     headers = {
         "X-RapidAPI-Key": os.environ.get("RAPID_API_KEY"),
         "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
     }
 
-    try:
-        response = requests.get(url, headers=headers, params=querystring)
+    found_jobs = []
+    
+    # 3. SEQUENTIAL SEARCH (Try queries one by one until we get results)
+    for query in search_queries:
+        if not query: continue
         
-        if response.status_code != 200:
-             print(f"JSearch Error: {response.text}")
-             return jsonify({"error": f"API Error: {response.status_code}"}), 500
-
-        data = response.json()
-        raw_jobs = data.get('data', [])
-
-        # 3. FILTER & FORMAT
-        forbidden = ["recruitment", "agency", "staffing", "werving", "selectie"]
+        print(f"🔎 Trying JSearch Query: {query}") # Debug print
         
-        formatted_jobs = []
-        for job in raw_jobs:
-            title = job.get('job_title', '').lower()
-            company = job.get('employer_name', '').lower()
+        querystring = {
+            "query": f"{query} in Netherlands", 
+            "page": "1",
+            "num_pages": "1", 
+            "date_posted": "month" # Widen date range to 'month' to ensure results
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=querystring)
+            data = response.json()
+            raw_jobs = data.get('data', [])
             
-            # Simple Filter: Skip known agency words
-            if any(bad in title for bad in forbidden): continue
-            if any(bad in company for bad in forbidden): continue
+            if raw_jobs:
+                print(f"✅ Found {len(raw_jobs)} jobs for '{query}'")
+                found_jobs = raw_jobs
+                break # Stop searching if we found jobs!
+            else:
+                print(f"⚠️ No jobs found for '{query}', trying next...")
+                
+        except Exception as e:
+            print(f"API Error for {query}: {e}")
+            continue
 
-            formatted_jobs.append({
-                "title": job.get('job_title'),
-                "company": job.get('employer_name'),
-                "location": f"{job.get('job_city')}, {job.get('job_country')}",
-                "job_url": job.get('job_apply_link'), 
-                "description": job.get('job_description', '')[:300] + "..." 
-            })
-
-        # 4. SAVE TO SHEETS
-        if sheet and formatted_jobs:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            for job in formatted_jobs:
-                row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
-                try: sheet.append_row(row)
-                except: pass
+    # 4. FILTER & FORMAT
+    forbidden = ["recruitment", "agency", "staffing", "werving", "selectie"]
+    
+    formatted_jobs = []
+    for job in found_jobs:
+        title = job.get('job_title', '').lower()
+        company = job.get('employer_name', '').lower()
         
-        return jsonify(formatted_jobs)
+        # Simple Filter: Skip known agency words
+        if any(bad in title for bad in forbidden): continue
+        if any(bad in company for bad in forbidden): continue
 
-    except Exception as e:
-        print(f"API Error: {e}")
-        return jsonify({"error": str(e)}), 500
+        formatted_jobs.append({
+            "title": job.get('job_title'),
+            "company": job.get('employer_name'),
+            "location": f"{job.get('job_city')}, {job.get('job_country')}",
+            "job_url": job.get('job_apply_link'), 
+            "description": job.get('job_description', '')[:300] + "..." 
+        })
+
+    # 5. SAVE TO SHEETS
+    if sheet and formatted_jobs:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for job in formatted_jobs:
+            row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
+            try: sheet.append_row(row)
+            except: pass
+    
+    return jsonify(formatted_jobs)
 
 @app.route('/generate_csv', methods=['POST'])
 def generate_csv():

@@ -40,8 +40,6 @@ except Exception as e:
 class BVnP_PDF(FPDF):
     def header(self):
         self.set_fill_color(30, 58, 138)
-        # self.rect(0, 0, 210, 35, 'F') 
-        
         logo_path = os.path.join(app.root_path, 'static', 'logo.png')
         if os.path.exists(logo_path):
             self.image(logo_path, x=60, y=2, w=90)
@@ -49,12 +47,12 @@ class BVnP_PDF(FPDF):
 
     def footer(self):
         self.set_y(-40)
+        self.set_font('Arial', 'B', 7)
+        self.set_text_color(30, 58, 138)
         col1, col2, col3, col4, col5 = 10, 50, 90, 130, 165
         y_head = self.get_y()
         y_content = y_head + 4
         
-        self.set_font('Arial', 'B', 7)
-        self.set_text_color(30, 58, 138)
         self.text(col1, y_head, "POST")
         self.text(col2, y_head, "BEZOEK")
         self.text(col3, y_head, "CONTACT")
@@ -63,7 +61,6 @@ class BVnP_PDF(FPDF):
 
         self.set_font('Arial', '', 6)
         self.set_text_color(80, 80, 80)
-
         self.set_xy(col1, y_content)
         self.multi_cell(35, 3, "Atoomweg 63\n3542AA Utrecht\nNederland")
         self.set_xy(col2, y_content)
@@ -74,28 +71,22 @@ class BVnP_PDF(FPDF):
         self.multi_cell(30, 3, "61798053\n\nBTW\nNL854492793801")
         self.set_xy(col5, y_content)
         self.multi_cell(35, 3, "NL57INGB0008955004\n\nBIC\nINGBNL2A")
-
         self.set_xy(10, -10)
         self.set_font('Arial', 'I', 5)
         self.set_text_color(150, 150, 150)
         self.cell(0, 5, "Op onze overeenkomsten zijn de algemene voorwaarden van Bart Vink & Partners van toepassing.", 0, 0, 'C')
 
     def section_row(self, heading, content):
-        left_col_x = 15
-        right_col_x = 65
-        right_col_width = 130
+        left_col_x, right_col_x, right_col_width = 15, 65, 130
         y_start = self.get_y()
-        estimated_lines = len(content) / 90
-        estimated_height = max(10, estimated_lines * 5)
+        estimated_height = max(10, (len(content) / 90) * 5)
         if y_start + estimated_height > 250:
             self.add_page()
             y_start = self.get_y()
-
         self.set_xy(left_col_x, y_start)
         self.set_font("Arial", "B", 10)
         self.set_text_color(30, 58, 138)
         self.multi_cell(45, 6, heading.upper())
-
         self.set_xy(right_col_x, y_start)
         self.set_font("Arial", "", 10)
         self.set_text_color(0, 0, 0)
@@ -114,31 +105,29 @@ def extract_text_from_pdf(pdf_path):
 
 def ai_process_cv(text):
     print(f"--- 1. PDF TEXT LENGTH: {len(text)} ---")
-    
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
-        
+        model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
         You are an expert Headhunter.
         Input CV Text: {text}
 
         TASKS:
         1. Identify Real Name.
-        2. ANONYMIZE content (Remove Name, Email, Phone, Address, LinkedIn).
+        2. ANONYMIZE content.
         3. Identify Seniority.
         4. Generate Search Data (Job Titles & Avoid List).
 
-        CRITICAL: You MUST populate the "structured_cv" first. Do not summarize; keep the details.
+        CRITICAL: Populate "structured_cv" first.
 
         RETURN JSON ONLY:
         {{
             "structured_cv": {{
-                "role_title": "The Anonymized Role Title",
-                "summary": "Anonymized professional summary...",
+                "role_title": "Anonymized Role",
+                "summary": "Summary...",
                 "skills": ["Skill1", "Skill2"],
                 "languages": ["Lang1"],
                 "experience": [
-                    {{ "title": "Job Title", "company": "Company/Industry", "dates": "Dates", "description": "Full description..." }}
+                    {{ "title": "Job Title", "company": "Company", "dates": "Dates", "description": "Details..." }}
                 ],
                 "education": [
                     {{ "degree": "Degree", "school": "School", "dates": "Dates" }}
@@ -149,68 +138,77 @@ def ai_process_cv(text):
             "keywords_to_avoid": ["Avoid1", "Avoid2"]
         }}
         """
+        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192})
         
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "response_mime_type": "application/json",
-                "max_output_tokens": 8192 
-            }
-        )
-        
-        # --- NEW: ROBUST JSON PARSER ---
-        # Sometimes AI cuts off. We try to fix it or fallback safely.
         try:
             data = json.loads(response.text)
         except json.JSONDecodeError:
-            print("⚠️ JSON Cutoff Detected! Attempting simple repair...")
-            # If JSON is cut off, we just assume the important parts (structured_cv) are there
-            # because we put them FIRST in the schema.
-            # We will try to close the brackets manually to salvage data.
+            print("⚠️ JSON Cutoff Detected! Attempting repair...")
             safe_text = response.text.strip()
-            if not safe_text.endswith("}"):
-                safe_text += '}' # Try closing main object
-            if not safe_text.endswith("}"):
-                safe_text += '}'
+            if not safe_text.endswith("}"): safe_text += '}'
+            try: data = json.loads(safe_text)
+            except: return {"real_name": "Unknown", "job_titles": ["Developer"], "keywords_to_avoid": [], "structured_cv": {"summary": "Error parsing."}}
             
-            try:
-                data = json.loads(safe_text)
-            except:
-                print("❌ Repair failed. Returning partial/error data.")
-                return {
-                    "real_name": "Unknown",
-                    "job_titles": ["Developer"],
-                    "keywords_to_avoid": [],
-                    "structured_cv": {"summary": "Error: CV too long for AI processing."}
-                }
-        
-        # Fallback if experience is empty
         if not data.get("structured_cv", {}).get("experience"):
-            print("⚠️ AI returned empty experience! Using fallback.")
-            data["structured_cv"]["experience"] = [{
-                "title": "Experience Section",
-                "company": "See Summary", 
-                "dates": "Present",
-                "description": "Please refer to the original CV for full details."
-            }]
+            data["structured_cv"]["experience"] = [{"title": "Experience", "company": "See Summary", "dates": "Present", "description": "Refer to original CV."}]
             
         return data
 
     except Exception as e:
         print(f"!!! AI ERROR: {e} !!!")
-        return {
-            "real_name": "Error", 
-            "job_titles": ["Business Analyst"], 
-            "keywords_to_avoid": [],
-            "structured_cv": {
-                "role_title": "Error Processing CV",
-                "summary": "The AI could not process this file.",
-                "skills": [],
-                "languages": [],
-                "experience": [],
-                "education": []
-            }
-        }
+        return {"real_name": "Error", "job_titles": ["Business Analyst"], "keywords_to_avoid": [], "structured_cv": {"summary": "Error processing file.", "skills": [], "experience": [], "education": []}}
+
+def get_ai_scores(jobs, skills_list):
+    """
+    Batch processes job scoring to save time.
+    Sends top 10 jobs to AI in one prompt.
+    """
+    if not jobs or not skills_list: return jobs
+
+    # We only score the top 10 to keep it fast
+    jobs_to_score = jobs[:10]
+    
+    # Create a mini-prompt with just Titles and Snippets
+    job_text_block = ""
+    for idx, job in enumerate(jobs_to_score):
+        job_text_block += f"ID {idx}: {job['title']} at {job['company']} - {job['description']}\n"
+
+    try:
+        model = genai.GenerativeModel('gemini-flash-latest')
+        prompt = f"""
+        You are a Recruiter matching a candidate to jobs.
+        
+        Candidate Skills: {", ".join(skills_list)}
+        
+        Jobs to Evaluate:
+        {job_text_block}
+        
+        Task: Rate each job (0-100) based on relevance to candidate skills.
+        Provide a SHORT 1-sentence reason.
+        
+        RETURN JSON ONLY:
+        {{
+            "scores": [
+                {{ "id": 0, "score": 95, "reason": "Perfect match for Cloud skills." }},
+                {{ "id": 1, "score": 40, "reason": "Role is too junior." }}
+            ]
+        }}
+        """
+        
+        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        score_data = json.loads(response.text)
+        
+        # Merge scores back into jobs
+        for item in score_data.get("scores", []):
+            idx = item.get("id")
+            if idx is not None and idx < len(jobs_to_score):
+                jobs[idx]["match_score"] = item.get("score")
+                jobs[idx]["match_reason"] = item.get("reason")
+                
+    except Exception as e:
+        print(f"Scoring Error: {e}")
+        
+    return jobs
 
 # --- ROUTES ---
 
@@ -236,47 +234,33 @@ def anonymize():
 def download_pdf():
     data = request.json
     cv_data = data.get('structured_cv', {})
-    
     pdf = BVnP_PDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=45)
-
     pdf.set_font("Arial", "B", 16)
     pdf.set_text_color(30, 58, 138)
     pdf.cell(0, 10, cv_data.get('role_title', 'CANDIDATE PROFILE'), 0, 1, 'C')
-    
     pdf.set_font("Arial", "I", 10)
     pdf.set_text_color(100, 100, 100)
     pdf.cell(0, 8, "Anoniem Curriculum Vitae", 0, 1, 'C')
     pdf.ln(10)
-
-    skills_text = ", ".join(cv_data.get('skills', []))
-    langs_text = ", ".join(cv_data.get('languages', []))
-    full_skills = f"Skills: {skills_text}\n\nTalen: {langs_text}"
     
-    pdf.section_row("VAARDIGHEDEN\n& TALEN", full_skills)
+    skills = ", ".join(cv_data.get('skills', []))
+    langs = ", ".join(cv_data.get('languages', []))
+    pdf.section_row("VAARDIGHEDEN", f"Skills: {skills}\n\nTalen: {langs}")
 
     if cv_data.get('experience'):
         first = True
         for job in cv_data['experience']:
             heading = "WERKERVARING" if first else ""
-            title = job.get('title', 'N/A')
-            comp = job.get('company', 'N/A')
-            dates = job.get('dates', 'N/A')
-            desc = job.get('description', '')
-            job_block = f"{title}\n{comp} | {dates}\n\n{desc}"
-            pdf.section_row(heading, job_block)
+            pdf.section_row(heading, f"{job.get('title')}\n{job.get('company')} | {job.get('dates')}\n\n{job.get('description')}")
             first = False
 
     if cv_data.get('education'):
         first = True
         for edu in cv_data['education']:
             heading = "OPLEIDING" if first else ""
-            degree = edu.get('degree', 'N/A')
-            school = edu.get('school', 'N/A')
-            dates = edu.get('dates', 'N/A')
-            edu_block = f"{degree}\n{school} | {dates}"
-            pdf.section_row(heading, edu_block)
+            pdf.section_row(heading, f"{edu.get('degree')}\n{edu.get('school')} | {edu.get('dates')}")
             first = False
 
     output_path = os.path.join(app.config['UPLOAD_FOLDER'], 'anonymous_cv.pdf')
@@ -288,81 +272,50 @@ def search_jobs():
     data = request.json
     raw_titles = data.get('job_titles', [])
     candidate_name = data.get('real_name', 'Unknown')
+    candidate_skills = data.get('cv_skills', []) # <--- NEW: Receive Skills
     
-    # 1. GENERATE SMART QUERIES
+    # 1. SMART QUERIES
     search_queries = []
     for t in raw_titles[:2]: 
         clean_t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
         if clean_t not in search_queries: search_queries.append(clean_t)
-        
         words = clean_t.split()
         if len(words) >= 2:
             short_t = " ".join(words[:2])
             if short_t not in search_queries: search_queries.append(short_t)
-    
-    # Fallback
     search_queries.append("Business Analyst") 
 
-    # 2. SETUP JOOBLE
+    # 2. JOOBLE FETCH
     JOOBLE_KEY = os.environ.get("JOOBLE_KEY")
     API_URL = "https://jooble.org/api/" + JOOBLE_KEY
-    
     raw_results = []
     seen_urls = set()
 
-    # 3. FETCH LOOP
-    print(f"🔎 Search Plan: {search_queries}")
-    
     for title in search_queries:
         if len(raw_results) >= 25: break 
-        
-        print(f"🔎 Jooble Searching: {title}")
         payload = { "keywords": title, "location": "Netherlands", "page": 1 }
-
         try:
             response = requests.post(API_URL, json=payload)
             data = response.json()
             jobs = data.get('jobs', [])
-            
             if jobs:
-                print(f"✅ Found {len(jobs)} jobs for '{title}'")
                 for j in jobs:
                     if j.get('link') not in seen_urls:
                         raw_results.append(j)
                         seen_urls.add(j.get('link'))
-        except Exception as e:
-            print(f"Jooble Error: {e}")
-            continue
+        except: continue
 
-    # 4. STRICT FILTERING (Enhanced Blocklist)
+    # 3. FILTER & FORMAT
     forbidden_words = [
-        # HR & Recruitment (Strict)
-        "recruitment", "recruiter", "talent acquisition", "hr manager", "human resources", 
-        "headhunter", "agency", "staffing", "werving", "selectie",
-        
-        # Non-IT Management/Ops
-        "supply chain", "logistics", "warehouse", "operations manager", "floor manager", 
-        "store manager", "category manager", "facility", "coordinator", "commissioning",
-        "quality", "environmental", "audit", "compliance", "legal",
-        
-        # Sales & Marketing
-        "sales", "account manager", "marketing", "commercial", "growth", "sme",
-        
-        # Finance
-        "financial", "accountant", "tax", "treasury", "controller",
-        
-        # Other Non-Tech
-        "cleaner", "driver", "mechanic", "nurse", "teacher", "internship", "stage"
+        "recruitment", "recruiter", "talent acquisition", "hr manager", "human resources", "headhunter", "agency", "staffing",
+        "supply chain", "logistics", "warehouse", "operations manager", "floor manager", "store manager", "cleaner", "driver",
+        "sales", "account manager", "marketing", "commercial", "financial", "accountant", "tax"
     ]
     
     final_jobs = []
-    
     for job in raw_results:
         title = job.get('title', '').lower()
         company = job.get('company', '').lower()
-        link = job.get('link')
-
-        # FILTER: Block if any forbidden word is in the TITLE or COMPANY
         if any(bad in title for bad in forbidden_words): continue
         if any(bad in company for bad in forbidden_words): continue
         
@@ -370,19 +323,25 @@ def search_jobs():
             "title": job.get('title'),
             "company": job.get('company', 'Unknown'),
             "location": job.get('location', 'Netherlands'),
-            "job_url": link,
-            "description": job.get('snippet', '') 
+            "job_url": job.get('link'),
+            "description": job.get('snippet', ''),
+            "match_score": 0,       # Default
+            "match_reason": "Analyzing..." # Default
         })
 
-    # Limit to top 20
-    final_jobs = final_jobs[:20]
+    final_jobs = final_jobs[:15] # Limit to 15 for scoring
 
-    # 5. SAVE TO SHEETS
+    # 4. AI SCORING (NEW STEP)
+    # We pass the list to Gemini to get match scores
+    if candidate_skills:
+        print("🤖 calculating AI Match Scores...")
+        final_jobs = get_ai_scores(final_jobs, candidate_skills)
+
+    # 5. SAVE
     if sheet and final_jobs:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for job in final_jobs:
-            row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
-            try: sheet.append_row(row)
+            try: sheet.append_row([timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']])
             except: pass
     
     return jsonify(final_jobs)
@@ -393,9 +352,7 @@ def generate_csv():
     jobs = data.get('jobs', [])
     if not jobs: return jsonify({"error": "No jobs"}), 400
     df = pd.DataFrame(jobs)
-    csv_path = os.path.join(app.config['UPLOAD_FOLDER'], 'found_jobs.csv')
-    df.to_csv(csv_path, index=False)
-    return send_file(csv_path, as_attachment=True)
+    return send_file(os.path.join(app.config['UPLOAD_FOLDER'], 'found_jobs.csv'), as_attachment=True)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))

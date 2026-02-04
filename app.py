@@ -11,6 +11,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import requests
 import re
+import time  # <--- Add this at the very top of app.py
 
 app = Flask(__name__)
 
@@ -160,8 +161,7 @@ def ai_process_cv(text):
 
 def get_ai_scores(jobs, skills_list):
     """
-    Batch processes job scoring to save time.
-    Sends top 10 jobs to AI in one prompt.
+    Batch processes job scoring with Auto-Retry for Rate Limits.
     """
     if not jobs or not skills_list: return jobs
 
@@ -173,41 +173,52 @@ def get_ai_scores(jobs, skills_list):
     for idx, job in enumerate(jobs_to_score):
         job_text_block += f"ID {idx}: {job['title']} at {job['company']} - {job['description']}\n"
 
+    prompt = f"""
+    You are a Recruiter matching a candidate to jobs.
+    Candidate Skills: {", ".join(skills_list)}
+    Jobs to Evaluate:
+    {job_text_block}
+    Task: Rate each job (0-100) based on relevance to candidate skills.
+    Provide a SHORT 1-sentence reason.
+    RETURN JSON ONLY:
+    {{
+        "scores": [
+            {{ "id": 0, "score": 95, "reason": "Perfect match for Cloud skills." }}
+        ]
+    }}
+    """
+
+    model = genai.GenerativeModel('gemini-flash-latest')
+
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
-        prompt = f"""
-        You are a Recruiter matching a candidate to jobs.
-        
-        Candidate Skills: {", ".join(skills_list)}
-        
-        Jobs to Evaluate:
-        {job_text_block}
-        
-        Task: Rate each job (0-100) based on relevance to candidate skills.
-        Provide a SHORT 1-sentence reason.
-        
-        RETURN JSON ONLY:
-        {{
-            "scores": [
-                {{ "id": 0, "score": 95, "reason": "Perfect match for Cloud skills." }},
-                {{ "id": 1, "score": 40, "reason": "Role is too junior." }}
-            ]
-        }}
-        """
-        
+        # ATTEMPT 1
         response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+    except Exception as e:
+        if "429" in str(e):
+            print("⚠️ Gemini Quota Exceeded (429). Waiting 60 seconds to cooldown...")
+            time.sleep(65) # Wait 65s to be safe
+            print("♻️ Retrying AI Scoring...")
+            try:
+                # ATTEMPT 2 (Retry)
+                response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            except Exception as retry_e:
+                print(f"❌ Retry failed: {retry_e}")
+                return jobs # Return jobs without scores if retry fails
+        else:
+            print(f"Scoring Error: {e}")
+            return jobs
+
+    # Parse Response
+    try:
         score_data = json.loads(response.text)
-        
-        # Merge scores back
         for item in score_data.get("scores", []):
             idx = item.get("id")
             if idx is not None and idx < len(jobs_to_score):
                 jobs[idx]["match_score"] = item.get("score")
                 jobs[idx]["match_reason"] = item.get("reason")
-                
-    except Exception as e:
-        print(f"Scoring Error: {e}")
-        
+    except Exception as parse_e:
+        print(f"JSON Parse Error: {parse_e}")
+
     return jobs
 
 # --- ROUTES ---

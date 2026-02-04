@@ -266,29 +266,30 @@ def search_jobs():
     raw_titles = data.get('job_titles', [])
     candidate_name = data.get('real_name', 'Unknown')
     
-    # 1. Clean Titles (e.g., "Data Consultant")
-    search_titles = []
+    # 1. CLEAN KEYWORDS
+    # We strip brackets/slashes because Jooble hates complex symbols
+    search_queries = []
     for t in raw_titles[:2]: 
         t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
-        search_titles.append(t)
+        search_queries.append(t)
     
-    # Fallback title
-    if not search_titles: search_titles = ["Developer"]
+    # Fallback if AI failed
+    if not search_queries: search_queries = ["Developer"]
 
     # 2. SETUP JOOBLE
     JOOBLE_KEY = os.environ.get("JOOBLE_KEY")
     API_URL = "https://jooble.org/api/" + JOOBLE_KEY
     
-    found_jobs = []
+    raw_results = []
 
-    # 3. SEQUENTIAL SEARCH (Try each title)
-    for title in search_titles:
+    # 3. FETCH WIDE (Query Jooble for each title)
+    for title in search_queries:
         print(f"🔎 Jooble Searching: {title}")
         
         payload = {
             "keywords": title,
             "location": "Netherlands",
-            "page": 1
+            "page": 1  # We only need page 1 for efficiency
         }
 
         try:
@@ -297,10 +298,8 @@ def search_jobs():
             jobs = data.get('jobs', [])
             
             if jobs:
-                print(f"✅ Found {len(jobs)} jobs for '{title}'")
-                found_jobs.extend(jobs)
-                # If we found enough jobs (e.g. 5+), stop searching to save time
-                if len(found_jobs) >= 5: break
+                print(f"✅ Found {len(jobs)} raw jobs for '{title}'")
+                raw_results.extend(jobs)
             else:
                 print(f"⚠️ Jooble found 0 jobs for '{title}'")
                 
@@ -308,30 +307,45 @@ def search_jobs():
             print(f"Jooble Error: {e}")
             continue
 
-    # 4. STRICT PYTHON FILTERING (The "Quality Control")
-    # Jooble sometimes sends junk. We filter it here.
+    # 4. FILTER TIGHT (The "Quality Control" Engine)
     
-    forbidden = ["recruitment", "agency", "staffing", "werving", "selectie"]
-    # We also explicitly Block non-tech roles if searching for tech
-    forbidden += ["sales", "account manager", "hr manager", "recruiter", "marketing"]
+    # A. Define Blocklist (Words we HATE)
+    forbidden_words = [
+        "recruitment", "agency", "staffing", "werving", "selectie", # Agencies
+        "sales", "account manager", "marketing", "hr manager",      # Irrelevant roles
+        "internship", "stage", "volunteer",                         # Low quality
+        "headhunter", "talent acquisition"
+    ]
     
-    formatted_jobs = []
-    seen_urls = set() # To prevent duplicates
+    final_jobs = []
+    seen_urls = set() # For Deduplication
     
-    for job in found_jobs:
+    for job in raw_results:
         title = job.get('title', '').lower()
         company = job.get('company', '').lower()
         link = job.get('link')
-        
-        # Deduplicate
-        if link in seen_urls: continue
+        snippet = job.get('snippet', '').lower()
+
+        # B. Deduplication Check
+        if link in seen_urls: 
+            continue
         seen_urls.add(link)
 
-        # Filter: Skip bad words
-        if any(bad in title for bad in forbidden): continue
-        if any(bad in company for bad in forbidden): continue
+        # C. The "Kill Switch" (Filter out bad jobs)
+        is_bad_job = False
+        
+        # Check Title
+        if any(bad in title for bad in forbidden_words): is_bad_job = True
+        # Check Company Name
+        if any(bad in company for bad in forbidden_words): is_bad_job = True
+        # Check Description Snippet (Optional, but safer)
+        if "recruitment agency" in snippet: is_bad_job = True
+        
+        if is_bad_job:
+            continue # Skip this job, don't add it
 
-        formatted_jobs.append({
+        # D. Add Good Job
+        final_jobs.append({
             "title": job.get('title'),
             "company": job.get('company', 'Unknown'),
             "location": job.get('location', 'Netherlands'),
@@ -340,14 +354,14 @@ def search_jobs():
         })
 
     # 5. SAVE TO SHEETS
-    if sheet and formatted_jobs:
+    if sheet and final_jobs:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        for job in formatted_jobs:
+        for job in final_jobs:
             row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
             try: sheet.append_row(row)
             except: pass
     
-    return jsonify(formatted_jobs)
+    return jsonify(final_jobs)
 
 @app.route('/generate_csv', methods=['POST'])
 def generate_csv():

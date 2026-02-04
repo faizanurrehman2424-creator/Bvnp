@@ -266,46 +266,35 @@ def search_jobs():
     raw_titles = data.get('job_titles', [])
     candidate_name = data.get('real_name', 'Unknown')
     
-    # 1. GENERATE SMART QUERIES (The "Onion" Strategy)
+    # 1. GENERATE SMART QUERIES ("Onion Strategy")
     search_queries = []
-    
     for t in raw_titles[:2]: 
-        # Clean the title first
         clean_t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
+        if clean_t not in search_queries: search_queries.append(clean_t)
         
-        # Level 1: Full Title (e.g. "Data Governance Consultant")
-        if clean_t not in search_queries:
-            search_queries.append(clean_t)
-            
-        # Level 2: First 2 Words (e.g. "Data Governance")
+        # Add broader version (first 2 words)
         words = clean_t.split()
         if len(words) >= 2:
             short_t = " ".join(words[:2])
-            if short_t not in search_queries:
-                search_queries.append(short_t)
+            if short_t not in search_queries: search_queries.append(short_t)
     
-    # Level 3: Fallback (Ensure we always get results)
-    search_queries.append("IT Consultant") 
-    search_queries.append("Developer")
+    # Fallback
+    search_queries.append("Business Analyst") 
 
     # 2. SETUP JOOBLE
     JOOBLE_KEY = os.environ.get("JOOBLE_KEY")
     API_URL = "https://jooble.org/api/" + JOOBLE_KEY
     
     raw_results = []
-    seen_urls = set() # To prevent duplicates
+    seen_urls = set()
 
     # 3. FETCH LOOP
     print(f"🔎 Search Plan: {search_queries}")
     
     for title in search_queries:
-        # Stop if we already have enough jobs (e.g. 20+)
-        if len(raw_results) >= 20: 
-            break
+        if len(raw_results) >= 25: break # Stop if we have enough
             
         print(f"🔎 Jooble Searching: {title}")
-        
-        # Check Page 1
         payload = { "keywords": title, "location": "Netherlands", "page": 1 }
 
         try:
@@ -315,23 +304,23 @@ def search_jobs():
             
             if jobs:
                 print(f"✅ Found {len(jobs)} jobs for '{title}'")
-                # Add to results if unique
                 for j in jobs:
                     if j.get('link') not in seen_urls:
                         raw_results.append(j)
                         seen_urls.add(j.get('link'))
-            else:
-                print(f"⚠️ 0 jobs for '{title}'")
-                    
         except Exception as e:
             print(f"Jooble Error: {e}")
             continue
 
-    # 4. FILTER TIGHT
-    # Block specific agency terms
+    # 4. STRICT FILTERING (Updated Blocklist)
+    # This blocklist removes the specific "junk" roles you saw
     forbidden_words = [
-        "recruitment", "agency", "staffing", "werving", "selectie", 
-        "headhunter", "talent acquisition"
+        # Agencies
+        "recruitment", "agency", "staffing", "werving", "selectie", "headhunter", "talent acquisition",
+        # Non-Tech / Irrelevant Roles
+        "cleaner", "housekeeping", "floor manager", "store manager", "sales director", "sales manager",
+        "marketing", "content", "social media", "financial analyst", "accountant", "audit", "tax",
+        "warehouse", "logistics", "driver", "operator", "commissioning", "internship", "stage"
     ]
     
     final_jobs = []
@@ -341,7 +330,7 @@ def search_jobs():
         company = job.get('company', '').lower()
         link = job.get('link')
 
-        # Filter: Block Agencies
+        # FILTER: Block if any forbidden word is in the TITLE or COMPANY
         if any(bad in title for bad in forbidden_words): continue
         if any(bad in company for bad in forbidden_words): continue
         

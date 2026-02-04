@@ -266,69 +266,82 @@ def search_jobs():
     raw_titles = data.get('job_titles', [])
     candidate_name = data.get('real_name', 'Unknown')
     
-    # 1. CLEAN KEYWORDS
+    # 1. GENERATE SMART QUERIES (The "Onion" Strategy)
     search_queries = []
-    for t in raw_titles[:2]: 
-        t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
-        search_queries.append(t)
     
-    if not search_queries: search_queries = ["Developer"]
+    for t in raw_titles[:2]: 
+        # Clean the title first
+        clean_t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
+        
+        # Level 1: Full Title (e.g. "Data Governance Consultant")
+        if clean_t not in search_queries:
+            search_queries.append(clean_t)
+            
+        # Level 2: First 2 Words (e.g. "Data Governance")
+        words = clean_t.split()
+        if len(words) >= 2:
+            short_t = " ".join(words[:2])
+            if short_t not in search_queries:
+                search_queries.append(short_t)
+    
+    # Level 3: Fallback (Ensure we always get results)
+    search_queries.append("IT Consultant") 
+    search_queries.append("Developer")
 
     # 2. SETUP JOOBLE
     JOOBLE_KEY = os.environ.get("JOOBLE_KEY")
     API_URL = "https://jooble.org/api/" + JOOBLE_KEY
     
     raw_results = []
+    seen_urls = set() # To prevent duplicates
 
-    # 3. FETCH WIDE (Fetch Page 1 AND Page 2)
+    # 3. FETCH LOOP
+    print(f"🔎 Search Plan: {search_queries}")
+    
     for title in search_queries:
+        # Stop if we already have enough jobs (e.g. 20+)
+        if len(raw_results) >= 20: 
+            break
+            
         print(f"🔎 Jooble Searching: {title}")
         
-        # Check first 2 pages to get more results
-        for page_num in [1, 2]:
-            payload = {
-                "keywords": title,
-                "location": "Netherlands",
-                "page": page_num
-            }
+        # Check Page 1
+        payload = { "keywords": title, "location": "Netherlands", "page": 1 }
 
-            try:
-                response = requests.post(API_URL, json=payload)
-                data = response.json()
-                jobs = data.get('jobs', [])
-                
-                if jobs:
-                    print(f"✅ Found {len(jobs)} raw jobs on Page {page_num} for '{title}'")
-                    raw_results.extend(jobs)
-                else:
-                    break # Stop if page 1 is empty
+        try:
+            response = requests.post(API_URL, json=payload)
+            data = response.json()
+            jobs = data.get('jobs', [])
+            
+            if jobs:
+                print(f"✅ Found {len(jobs)} jobs for '{title}'")
+                # Add to results if unique
+                for j in jobs:
+                    if j.get('link') not in seen_urls:
+                        raw_results.append(j)
+                        seen_urls.add(j.get('link'))
+            else:
+                print(f"⚠️ 0 jobs for '{title}'")
                     
-            except Exception as e:
-                print(f"Jooble Error: {e}")
-                continue
+        except Exception as e:
+            print(f"Jooble Error: {e}")
+            continue
 
-    # 4. FILTER TIGHT (Relaxed Logic)
-    
-    # We ONLY block Recruitment Agencies now. 
-    # We removed "Marketing", "Sales", "HR" because the candidate might actually WANT those jobs.
+    # 4. FILTER TIGHT
+    # Block specific agency terms
     forbidden_words = [
         "recruitment", "agency", "staffing", "werving", "selectie", 
-        "headhunter", "talent acquisition", "interim"
+        "headhunter", "talent acquisition"
     ]
     
     final_jobs = []
-    seen_urls = set() 
     
     for job in raw_results:
         title = job.get('title', '').lower()
         company = job.get('company', '').lower()
         link = job.get('link')
-        
-        # Deduplicate
-        if link in seen_urls: continue
-        seen_urls.add(link)
 
-        # Filter: Block Agencies Only
+        # Filter: Block Agencies
         if any(bad in title for bad in forbidden_words): continue
         if any(bad in company for bad in forbidden_words): continue
         
@@ -340,7 +353,7 @@ def search_jobs():
             "description": job.get('snippet', '') 
         })
 
-    # Limit to top 20 to keep it clean
+    # Limit to top 20
     final_jobs = final_jobs[:20]
 
     # 5. SAVE TO SHEETS

@@ -6,7 +6,6 @@ from werkzeug.utils import secure_filename
 from pypdf import PdfReader
 from fpdf import FPDF
 import google.generativeai as genai
-from jobspy import scrape_jobs
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
@@ -19,12 +18,13 @@ app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 STATIC_FOLDER = 'static'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(STATIC_FOLDER, exist_ok=True) 
+os.makedirs(STATIC_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # 1. SETUP GEMINI API
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY") # <--- REPLACE WITH YOUR KEY
-genai.configure(api_key=GENAI_API_KEY)
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
+if GENAI_API_KEY:
+    genai.configure(api_key=GENAI_API_KEY)
 
 # 2. SETUP GOOGLE SHEETS
 try:
@@ -40,10 +40,10 @@ except Exception as e:
 class BVnP_PDF(FPDF):
     def header(self):
         # 1. Full Width Blue Header (100% Width)
-        self.set_fill_color(30, 58, 138) 
+        self.set_fill_color(30, 58, 138)
         
-        # DELETE THIS LINE TO REMOVE BLUE BACKGROUND:
-        # self.rect(0, 0, 210, 35, 'F')  <-- Comment this out!
+        # REMOVED BLUE BACKGROUND (Commented out as requested)
+        # self.rect(0, 0, 210, 35, 'F') 
         
         # 2. Add Logo (Centered, Larger)
         logo_path = os.path.join(app.root_path, 'static', 'logo.png')
@@ -51,6 +51,7 @@ class BVnP_PDF(FPDF):
             self.image(logo_path, x=60, y=2, w=90)
             
         self.ln(45)
+
     def footer(self):
         self.set_y(-40)
         col1, col2, col3, col4, col5 = 10, 50, 90, 130, 165
@@ -121,9 +122,9 @@ def extract_text_from_pdf(pdf_path):
 
 def ai_process_cv(text):
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
+        # Use Gemini Flash for speed
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # --- UPDATED PROMPT: INSTRUCTS AI ON KEYWORDS ---
         prompt = f"""
         You are an expert CV Anonymizer for "Bart Vink & Partners".
         Input CV Text: {text}
@@ -133,34 +134,44 @@ def ai_process_cv(text):
         2. ANONYMIZE content (Remove Name, Email, Phone).
         3. Structure data.
         4. Generate 3-5 Job Search Keywords. 
-           CRITICAL: Do NOT use generic terms like "Consultant" or "Manager" alone. 
-           Use specific skills like "Data Governance", "Product Owner", "Business Analyst".
+           CRITICAL: Do NOT use generic terms like "Consultant" or "Manager".
+           Use specific skills like "Data Governance", "Product Owner", "React Developer".
            Do NOT use words like "Recruitment", "Staffing", or "Agency".
 
-        OUTPUT JSON ONLY:
+        RETURN JSON ONLY. Follow this schema exactly:
         {{
             "real_name": "Name",
-            "search_keywords": ["Specific Skill 1", "Specific Skill 2"],
+            "search_keywords": ["Skill1", "Skill2"],
             "structured_cv": {{
                 "role_title": "Role Title",
-                "summary": "Summary text...",
+                "summary": "Summary...",
                 "skills": ["Skill1", "Skill2"],
                 "languages": ["Lang1"],
                 "experience": [
-                    {{ "title": "Job Title", "company": "Company", "dates": "2020-2022", "description": "Details..." }}
+                    {{ "title": "Job Title", "company": "Company", "dates": "Dates", "description": "Details" }}
                 ],
                 "education": [
-                    {{ "degree": "Degree", "school": "School", "dates": "2019" }}
+                    {{ "degree": "Degree", "school": "School", "dates": "Dates" }}
                 ]
             }}
         }}
         """
-        response = model.generate_content(prompt)
-        clean_json = response.text.replace("```json", "").replace("```", "")
-        return json.loads(clean_json)
+        
+        # FORCE JSON MODE (Prevents crashing)
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
+        
+        return json.loads(response.text)
+
     except Exception as e:
-        print(f"API Error: {e}")
-        return {"real_name": "Error", "structured_cv": {}}
+        print(f"AI Error: {e}")
+        return {
+            "real_name": "Error", 
+            "search_keywords": ["Developer"], 
+            "structured_cv": {"summary": "Error processing CV. Please try again."}
+        }
 
 # --- ROUTES ---
 
@@ -241,47 +252,55 @@ def search_jobs():
     
     if not keywords: return jsonify({"error": "No keywords"}), 400
 
-    # 1. SETUP SERPAPI
-    # Get this from Environment Variables in Render
     SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
     
-    # 2. CONSTRUCT QUERY
-    # We combine the keywords and add negative terms to filter out agencies
+    # Define Queries
     base_query = " ".join(keywords)
-    query_string = f"{base_query} -recruitment -agency -staffing"
-    
-    print(f"🔎 SerpApi Searching: {query_string}")
+    # Query 1: Strict (Preferred)
+    strict_query = f"{base_query} -recruitment -agency -staffing"
+    # Query 2: Broad (Fallback)
+    broad_query = base_query
 
     params = {
       "engine": "google_jobs",
-      "q": query_string,
       "location": "Netherlands",
-      "hl": "en",  # Interface Language: English
-      "gl": "nl",  # Country: Netherlands
+      "hl": "en",
+      "gl": "nl",
       "api_key": SERPAPI_KEY
     }
 
+    print(f"🔎 SerpApi Searching: {strict_query}")
+
     try:
+        # --- ATTEMPT 1: STRICT SEARCH ---
+        params["q"] = strict_query
         search = GoogleSearch(params)
         results = search.get_dict()
         
-        # Check for error in response
+        # Check for empty results error
         if "error" in results:
-            return jsonify({"error": results["error"]}), 500
-            
-        jobs_results = results.get("jobs_results", [])
+            print(f"⚠️ Strict search failed: {results['error']}")
+            jobs_results = []
+        else:
+            jobs_results = results.get("jobs_results", [])
 
+        # --- ATTEMPT 2: BROAD SEARCH (Fallback) ---
+        if not jobs_results:
+            print(f"🔄 Switching to Broad Search: {broad_query}")
+            params["q"] = broad_query
+            search = GoogleSearch(params)
+            results = search.get_dict()
+            jobs_results = results.get("jobs_results", [])
+
+        # --- PROCESS RESULTS ---
         formatted_jobs = []
         for job in jobs_results:
-            
-            # EXTRACT APPLY LINK
-            # Google often gives a list called "apply_options". We take the first one.
+            # Extract Link (Handle multiple options)
             apply_options = job.get("apply_options", [])
             link = "#"
             if apply_options:
                 link = apply_options[0].get("link")
             else:
-                # Fallback if no apply options exist
                 link = job.get("related_links", [{}])[0].get("link", "#")
 
             formatted_jobs.append({
@@ -292,7 +311,7 @@ def search_jobs():
                 "description": job.get("description", "No description available.")
             })
 
-        # 3. SAVE TO SHEETS (Optional)
+        # Save to Sheets
         if sheet and formatted_jobs:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for job in formatted_jobs:
@@ -304,7 +323,8 @@ def search_jobs():
 
     except Exception as e:
         print(f"SerpApi Error: {e}")
-        return jsonify({"error": str(e)}), 500        
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/generate_csv', methods=['POST'])
 def generate_csv():
     data = request.json
@@ -316,6 +336,5 @@ def generate_csv():
     return send_file(csv_path, as_attachment=True)
 
 if __name__ == '__main__':
-    # Render assigns a random port, we must listen to it
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)

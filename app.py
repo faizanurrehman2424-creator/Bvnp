@@ -267,13 +267,11 @@ def search_jobs():
     candidate_name = data.get('real_name', 'Unknown')
     
     # 1. CLEAN KEYWORDS
-    # We strip brackets/slashes because Jooble hates complex symbols
     search_queries = []
     for t in raw_titles[:2]: 
         t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
         search_queries.append(t)
     
-    # Fallback if AI failed
     if not search_queries: search_queries = ["Developer"]
 
     # 2. SETUP JOOBLE
@@ -282,69 +280,58 @@ def search_jobs():
     
     raw_results = []
 
-    # 3. FETCH WIDE (Query Jooble for each title)
+    # 3. FETCH WIDE (Fetch Page 1 AND Page 2)
     for title in search_queries:
         print(f"🔎 Jooble Searching: {title}")
         
-        payload = {
-            "keywords": title,
-            "location": "Netherlands",
-            "page": 1  # We only need page 1 for efficiency
-        }
+        # Check first 2 pages to get more results
+        for page_num in [1, 2]:
+            payload = {
+                "keywords": title,
+                "location": "Netherlands",
+                "page": page_num
+            }
 
-        try:
-            response = requests.post(API_URL, json=payload)
-            data = response.json()
-            jobs = data.get('jobs', [])
-            
-            if jobs:
-                print(f"✅ Found {len(jobs)} raw jobs for '{title}'")
-                raw_results.extend(jobs)
-            else:
-                print(f"⚠️ Jooble found 0 jobs for '{title}'")
+            try:
+                response = requests.post(API_URL, json=payload)
+                data = response.json()
+                jobs = data.get('jobs', [])
                 
-        except Exception as e:
-            print(f"Jooble Error: {e}")
-            continue
+                if jobs:
+                    print(f"✅ Found {len(jobs)} raw jobs on Page {page_num} for '{title}'")
+                    raw_results.extend(jobs)
+                else:
+                    break # Stop if page 1 is empty
+                    
+            except Exception as e:
+                print(f"Jooble Error: {e}")
+                continue
 
-    # 4. FILTER TIGHT (The "Quality Control" Engine)
+    # 4. FILTER TIGHT (Relaxed Logic)
     
-    # A. Define Blocklist (Words we HATE)
+    # We ONLY block Recruitment Agencies now. 
+    # We removed "Marketing", "Sales", "HR" because the candidate might actually WANT those jobs.
     forbidden_words = [
-        "recruitment", "agency", "staffing", "werving", "selectie", # Agencies
-        "sales", "account manager", "marketing", "hr manager",      # Irrelevant roles
-        "internship", "stage", "volunteer",                         # Low quality
-        "headhunter", "talent acquisition"
+        "recruitment", "agency", "staffing", "werving", "selectie", 
+        "headhunter", "talent acquisition", "interim"
     ]
     
     final_jobs = []
-    seen_urls = set() # For Deduplication
+    seen_urls = set() 
     
     for job in raw_results:
         title = job.get('title', '').lower()
         company = job.get('company', '').lower()
         link = job.get('link')
-        snippet = job.get('snippet', '').lower()
-
-        # B. Deduplication Check
-        if link in seen_urls: 
-            continue
+        
+        # Deduplicate
+        if link in seen_urls: continue
         seen_urls.add(link)
 
-        # C. The "Kill Switch" (Filter out bad jobs)
-        is_bad_job = False
+        # Filter: Block Agencies Only
+        if any(bad in title for bad in forbidden_words): continue
+        if any(bad in company for bad in forbidden_words): continue
         
-        # Check Title
-        if any(bad in title for bad in forbidden_words): is_bad_job = True
-        # Check Company Name
-        if any(bad in company for bad in forbidden_words): is_bad_job = True
-        # Check Description Snippet (Optional, but safer)
-        if "recruitment agency" in snippet: is_bad_job = True
-        
-        if is_bad_job:
-            continue # Skip this job, don't add it
-
-        # D. Add Good Job
         final_jobs.append({
             "title": job.get('title'),
             "company": job.get('company', 'Unknown'),
@@ -352,6 +339,9 @@ def search_jobs():
             "job_url": link,
             "description": job.get('snippet', '') 
         })
+
+    # Limit to top 20 to keep it clean
+    final_jobs = final_jobs[:20]
 
     # 5. SAVE TO SHEETS
     if sheet and final_jobs:

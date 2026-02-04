@@ -10,7 +10,6 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import requests
-from serpapi import GoogleSearch
 import re
 
 app = Flask(__name__)
@@ -40,17 +39,12 @@ except Exception as e:
 # --- PDF GENERATOR CLASS ---
 class BVnP_PDF(FPDF):
     def header(self):
-        # 1. Full Width Blue Header (100% Width)
         self.set_fill_color(30, 58, 138)
+        # self.rect(0, 0, 210, 35, 'F') # Blue background removed
         
-        # REMOVED BLUE BACKGROUND (Commented out as requested)
-        # self.rect(0, 0, 210, 35, 'F') 
-        
-        # 2. Add Logo (Centered, Larger)
         logo_path = os.path.join(app.root_path, 'static', 'logo.png')
         if os.path.exists(logo_path):
             self.image(logo_path, x=60, y=2, w=90)
-            
         self.ln(45)
 
     def footer(self):
@@ -91,10 +85,8 @@ class BVnP_PDF(FPDF):
         right_col_x = 65
         right_col_width = 130
         y_start = self.get_y()
-        
         estimated_lines = len(content) / 90
         estimated_height = max(10, estimated_lines * 5)
-        
         if y_start + estimated_height > 250:
             self.add_page()
             y_start = self.get_y()
@@ -107,7 +99,6 @@ class BVnP_PDF(FPDF):
         self.set_xy(right_col_x, y_start)
         self.set_font("Arial", "", 10)
         self.set_text_color(0, 0, 0)
-        
         safe_content = content.encode('latin-1', 'replace').decode('latin-1')
         self.multi_cell(right_col_width, 6, safe_content)
         self.ln(6)
@@ -122,7 +113,9 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 def ai_process_cv(text):
-    print(f"--- 1. SENDING {len(text)} CHARS TO AI ---")
+    # Debug: Check if PDF text exists
+    print(f"--- 1. PDF TEXT LENGTH: {len(text)} ---")
+    
     try:
         model = genai.GenerativeModel('gemini-flash-latest')
         
@@ -158,7 +151,6 @@ def ai_process_cv(text):
         }}
         """
         
-        # FIX: Increase output limit to 8192 tokens (prevents cutoff on long CVs)
         response = model.generate_content(
             prompt,
             generation_config={
@@ -169,18 +161,15 @@ def ai_process_cv(text):
         
         data = json.loads(response.text)
         
-        # --- SANITY CHECK ---
-        # If AI returned empty experience, let's at least put something in the PDF
+        # Fallback if experience is empty
         if not data.get("structured_cv", {}).get("experience"):
             print("⚠️ AI returned empty experience! Using fallback.")
-            data["structured_cv"]["experience"] = [
-                {
-                    "title": "Experience Section",
-                    "company": "See Summary", 
-                    "dates": "Present",
-                    "description": "The AI extracted skills but could not parse the full experience history. Please refer to the original CV."
-                }
-            ]
+            data["structured_cv"]["experience"] = [{
+                "title": "Experience Section",
+                "company": "See Summary", 
+                "dates": "Present",
+                "description": "Please refer to the original CV for full details."
+            }]
             
         return data
 
@@ -192,14 +181,15 @@ def ai_process_cv(text):
             "keywords_to_avoid": [],
             "structured_cv": {
                 "role_title": "Error Processing CV",
-                "summary": "The AI could not process this file. Please try again.",
+                "summary": "The AI could not process this file.",
                 "skills": [],
                 "languages": [],
                 "experience": [],
                 "education": []
             }
         }
-        # --- ROUTES ---
+
+# --- ROUTES ---
 
 @app.route('/')
 def home():
@@ -273,87 +263,84 @@ def download_pdf():
 @app.route('/search_jobs', methods=['POST'])
 def search_jobs():
     data = request.json
-    job_titles = data.get('job_titles', [])
-    neg_keywords = data.get('negative_keywords', [])
+    
+    # 1. GET DATA & CLEAN INPUTS
+    raw_titles = data.get('job_titles', [])
     candidate_name = data.get('real_name', 'Unknown')
     
-    if not job_titles: return jsonify({"error": "No job titles provided"}), 400
+    # Clean titles: Remove brackets and slashes
+    cleaned_titles = []
+    for t in raw_titles[:2]: 
+        # Remove anything in brackets and replace slashes
+        t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
+        cleaned_titles.append(t)
+    
+    # Construct Query: "Title1 OR Title2"
+    query = " OR ".join(cleaned_titles)
+    
+    if not query: 
+        query = "Developer" # Last resort fallback
 
-    SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
-    
-    # --- CLEANING STEP (NEW) ---
-    # Remove brackets, slashes, and extra spaces to make Google happy
-    clean_titles = []
-    for t in job_titles[:2]:
-        # Remove text inside brackets: "Analyst (IT)" -> "Analyst"
-        t = re.sub(r'\(.*?\)', '', t)
-        # Remove slashes: "Analyst/Owner" -> "Analyst Owner"
-        t = t.replace('/', ' ')
-        # Remove extra spaces
-        t = t.strip()
-        clean_titles.append(t)
-    
-    # Construct OR Query: "(Title1 OR Title2)"
-    titles_query = f"({' OR '.join(clean_titles)})" 
-    
-    defaults = ["recruitment", "agency", "staffing"]
-    all_negatives = list(set(neg_keywords + defaults)) 
-    neg_query = " -" + " -".join(all_negatives)
-    
-    smart_query = titles_query + neg_query
-    broad_query = titles_query # Fallback is just the cleaned titles
+    print(f"🔎 JSearch Query: {query} in Netherlands")
 
-    print(f"🔎 Smart Query: {smart_query}")
+    # 2. SETUP JSEARCH (RAPIDAPI)
+    url = "https://jsearch.p.rapidapi.com/search"
+    
+    querystring = {
+        "query": f"{query} in Netherlands", 
+        "page": "1",
+        "num_pages": "1", 
+        "date_posted": "week" # Fresh jobs only
+    }
 
-    params = {
-      "engine": "google_jobs",
-      "location": "Netherlands",
-      "hl": "en",
-      "gl": "nl",
-      "api_key": SERPAPI_KEY
+    # Get Key from Render Environment
+    headers = {
+        "X-RapidAPI-Key": os.environ.get("RAPID_API_KEY"),
+        "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
     }
 
     try:
-        # ATTEMPT 1: SMART SEARCH
-        params["q"] = smart_query
-        search = GoogleSearch(params)
-        results = search.get_dict()
-        jobs_results = results.get("jobs_results", []) if "error" not in results else []
+        response = requests.get(url, headers=headers, params=querystring)
+        
+        if response.status_code != 200:
+             print(f"JSearch Error: {response.text}")
+             return jsonify({"error": f"API Error: {response.status_code}"}), 500
 
-        # ATTEMPT 2: BROAD SEARCH
-        if not jobs_results:
-            print(f"🔄 Switching to Broad Search: {broad_query}")
-            params["q"] = broad_query
-            search = GoogleSearch(params)
-            results = search.get_dict()
-            jobs_results = results.get("jobs_results", [])
+        data = response.json()
+        raw_jobs = data.get('data', [])
 
-        # Process Results
+        # 3. FILTER & FORMAT
+        forbidden = ["recruitment", "agency", "staffing", "werving", "selectie"]
+        
         formatted_jobs = []
-        for job in jobs_results:
-            apply_options = job.get("apply_options", [])
-            link = apply_options[0].get("link") if apply_options else job.get("related_links", [{}])[0].get("link", "#")
+        for job in raw_jobs:
+            title = job.get('job_title', '').lower()
+            company = job.get('employer_name', '').lower()
+            
+            # Simple Filter: Skip known agency words
+            if any(bad in title for bad in forbidden): continue
+            if any(bad in company for bad in forbidden): continue
 
             formatted_jobs.append({
-                "title": job.get("title"),
-                "company": job.get("company_name"),
-                "location": job.get("location"),
-                "job_url": link,
-                "description": job.get("description", "No description available.")
+                "title": job.get('job_title'),
+                "company": job.get('employer_name'),
+                "location": f"{job.get('job_city')}, {job.get('job_country')}",
+                "job_url": job.get('job_apply_link'), 
+                "description": job.get('job_description', '')[:300] + "..." 
             })
 
-        # Save to Sheets
+        # 4. SAVE TO SHEETS
         if sheet and formatted_jobs:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for job in formatted_jobs:
                 row = [timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']]
                 try: sheet.append_row(row)
                 except: pass
-            
+        
         return jsonify(formatted_jobs)
 
     except Exception as e:
-        print(f"SerpApi Error: {e}")
+        print(f"API Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/generate_csv', methods=['POST'])

@@ -289,13 +289,12 @@ def search_jobs():
     raw_titles = data.get('job_titles', [])
     candidate_name = data.get('real_name', 'Unknown')
     
-    # 1. GENERATE SMART QUERIES ("Onion Strategy")
+    # 1. GENERATE SMART QUERIES
     search_queries = []
     for t in raw_titles[:2]: 
         clean_t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
         if clean_t not in search_queries: search_queries.append(clean_t)
         
-        # Add broader version (first 2 words)
         words = clean_t.split()
         if len(words) >= 2:
             short_t = " ".join(words[:2])
@@ -315,8 +314,8 @@ def search_jobs():
     print(f"🔎 Search Plan: {search_queries}")
     
     for title in search_queries:
-        if len(raw_results) >= 25: break # Stop if we have enough
-            
+        if len(raw_results) >= 25: break 
+        
         print(f"🔎 Jooble Searching: {title}")
         payload = { "keywords": title, "location": "Netherlands", "page": 1 }
 
@@ -335,15 +334,25 @@ def search_jobs():
             print(f"Jooble Error: {e}")
             continue
 
-    # 4. STRICT FILTERING (Updated Blocklist)
-    # This blocklist removes the specific "junk" roles you saw
+    # 4. STRICT FILTERING (Enhanced Blocklist)
     forbidden_words = [
-        # Agencies
-        "recruitment", "agency", "staffing", "werving", "selectie", "headhunter", "talent acquisition",
-        # Non-Tech / Irrelevant Roles
-        "cleaner", "housekeeping", "floor manager", "store manager", "sales director", "sales manager",
-        "marketing", "content", "social media", "financial analyst", "accountant", "audit", "tax",
-        "warehouse", "logistics", "driver", "operator", "commissioning", "internship", "stage"
+        # HR & Recruitment (Strict)
+        "recruitment", "recruiter", "talent acquisition", "hr manager", "human resources", 
+        "headhunter", "agency", "staffing", "werving", "selectie",
+        
+        # Non-IT Management/Ops
+        "supply chain", "logistics", "warehouse", "operations manager", "floor manager", 
+        "store manager", "category manager", "facility", "coordinator", "commissioning",
+        "quality", "environmental", "audit", "compliance", "legal",
+        
+        # Sales & Marketing
+        "sales", "account manager", "marketing", "commercial", "growth", "sme",
+        
+        # Finance
+        "financial", "accountant", "tax", "treasury", "controller",
+        
+        # Other Non-Tech
+        "cleaner", "driver", "mechanic", "nurse", "teacher", "internship", "stage"
     ]
     
     final_jobs = []

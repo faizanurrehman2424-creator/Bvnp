@@ -263,81 +263,80 @@ def download_pdf():
 @app.route('/search_jobs', methods=['POST'])
 def search_jobs():
     data = request.json
-    
-    # 1. GET DATA & CLEAN INPUTS
     raw_titles = data.get('job_titles', [])
     candidate_name = data.get('real_name', 'Unknown')
     
-    # Clean titles
-    search_queries = []
+    # 1. Clean Titles (e.g., "Data Consultant")
+    search_titles = []
     for t in raw_titles[:2]: 
         t = re.sub(r'\(.*?\)', '', t).replace('/', ' ').strip()
-        search_queries.append(t)
+        search_titles.append(t)
     
-    # Add a fallback query
-    search_queries.append("Software Engineer") 
+    # Fallback title
+    if not search_titles: search_titles = ["Developer"]
 
-    # 2. SETUP JSEARCH (RAPIDAPI)
-    url = "https://jsearch.p.rapidapi.com/search"
-    headers = {
-        "X-RapidAPI-Key": os.environ.get("RAPID_API_KEY"),
-        "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
-    }
-
+    # 2. SETUP JOOBLE
+    JOOBLE_KEY = os.environ.get("JOOBLE_KEY")
+    API_URL = "https://jooble.org/api/" + JOOBLE_KEY
+    
     found_jobs = []
-    
-    # 3. SEQUENTIAL SEARCH
-    for query in search_queries:
-        if not query: continue
+
+    # 3. SEQUENTIAL SEARCH (Try each title)
+    for title in search_titles:
+        print(f"🔎 Jooble Searching: {title}")
         
-        print(f"🔎 Trying JSearch Query: {query}") 
-        
-        # --- FIX: REMOVED DATE FILTER ---
-        querystring = {
-            "query": f"{query} in Netherlands", 
-            "page": "1",
-            "num_pages": "1"
+        payload = {
+            "keywords": title,
+            "location": "Netherlands",
+            "page": 1
         }
 
         try:
-            response = requests.get(url, headers=headers, params=querystring)
-            
-            # Print response text if it fails, so we can debug in Render logs
-            if response.status_code != 200:
-                print(f"❌ API STATUS {response.status_code}: {response.text}")
-                continue
-
+            response = requests.post(API_URL, json=payload)
             data = response.json()
-            raw_jobs = data.get('data', [])
+            jobs = data.get('jobs', [])
             
-            if raw_jobs:
-                print(f"✅ Found {len(raw_jobs)} jobs for '{query}'")
-                found_jobs = raw_jobs
-                break 
+            if jobs:
+                print(f"✅ Found {len(jobs)} jobs for '{title}'")
+                found_jobs.extend(jobs)
+                # If we found enough jobs (e.g. 5+), stop searching to save time
+                if len(found_jobs) >= 5: break
             else:
-                print(f"⚠️ No jobs found for '{query}'. Response: {data}")
+                print(f"⚠️ Jooble found 0 jobs for '{title}'")
                 
         except Exception as e:
-            print(f"API Error for {query}: {e}")
+            print(f"Jooble Error: {e}")
             continue
 
-    # 4. FILTER & FORMAT
+    # 4. STRICT PYTHON FILTERING (The "Quality Control")
+    # Jooble sometimes sends junk. We filter it here.
+    
     forbidden = ["recruitment", "agency", "staffing", "werving", "selectie"]
+    # We also explicitly Block non-tech roles if searching for tech
+    forbidden += ["sales", "account manager", "hr manager", "recruiter", "marketing"]
     
     formatted_jobs = []
+    seen_urls = set() # To prevent duplicates
+    
     for job in found_jobs:
-        title = job.get('job_title', '').lower()
-        company = job.get('employer_name', '').lower()
+        title = job.get('title', '').lower()
+        company = job.get('company', '').lower()
+        link = job.get('link')
         
+        # Deduplicate
+        if link in seen_urls: continue
+        seen_urls.add(link)
+
+        # Filter: Skip bad words
         if any(bad in title for bad in forbidden): continue
         if any(bad in company for bad in forbidden): continue
 
         formatted_jobs.append({
-            "title": job.get('job_title'),
-            "company": job.get('employer_name'),
-            "location": f"{job.get('job_city', 'Netherlands')}, {job.get('job_country', '')}",
-            "job_url": job.get('job_apply_link'), 
-            "description": job.get('job_description', '')[:300] + "..." 
+            "title": job.get('title'),
+            "company": job.get('company', 'Unknown'),
+            "location": job.get('location', 'Netherlands'),
+            "job_url": link,
+            "description": job.get('snippet', '') 
         })
 
     # 5. SAVE TO SHEETS

@@ -123,7 +123,7 @@ def extract_text_from_pdf(pdf_path):
 def ai_process_cv(text):
     print(f"--- 1. SENDING {len(text)} CHARS TO AI ---") # Debug print
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         
         prompt = f"""
         You are an expert Headhunter and CV Anonymizer.

@@ -10,3 +10,4 @@ fpdf
 werkzeug
 requests
 google-search-results
+openai

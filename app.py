@@ -5,13 +5,13 @@ from flask import Flask, request, jsonify, send_file, render_template
 from werkzeug.utils import secure_filename
 from pypdf import PdfReader
 from fpdf import FPDF
-import google.generativeai as genai
+from openai import OpenAI  # <--- CHANGED: Switched to OpenAI
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import requests
 import re
-import time  # <--- Add this at the very top of app.py
+import time 
 
 app = Flask(__name__)
 
@@ -22,10 +22,12 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(STATIC_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# 1. SETUP GEMINI API
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
-if GENAI_API_KEY:
-    genai.configure(api_key=GENAI_API_KEY)
+# 1. SETUP OPENAI API (CHANGED)
+# Make sure to add "OPENAI_API_KEY" to your Render Environment Variables
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+client = None
+if OPENAI_API_KEY:
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
 # 2. SETUP GOOGLE SHEETS
 try:
@@ -107,45 +109,58 @@ def extract_text_from_pdf(pdf_path):
 def ai_process_cv(text):
     print(f"--- 1. PDF TEXT LENGTH: {len(text)} ---")
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
-        prompt = f"""
-        You are an expert Headhunter.
-        Input CV Text: {text}
+        # CHANGED: OpenAI Call
+        response = client.chat.completions.create(
+            model="gpt-4o",  # Using the Pro/Flagship model
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "You are an expert Headhunter. You must response in JSON format."
+                },
+                {
+                    "role": "user", 
+                    "content": f"""
+                    Input CV Text: {text}
 
-        TASKS:
-        1. Identify Real Name.
-        2. ANONYMIZE content.
-        3. Identify Seniority.
-        4. Generate Search Data (Job Titles & Avoid List).
+                    TASKS:
+                    1. Identify Real Name.
+                    2. ANONYMIZE content.
+                    3. Identify Seniority.
+                    4. Generate Search Data (Job Titles & Avoid List).
 
-        CRITICAL: Populate "structured_cv" first.
+                    CRITICAL: Populate "structured_cv" first.
 
-        RETURN JSON ONLY:
-        {{
-            "structured_cv": {{
-                "role_title": "Anonymized Role",
-                "summary": "Summary...",
-                "skills": ["Skill1", "Skill2"],
-                "languages": ["Lang1"],
-                "experience": [
-                    {{ "title": "Job Title", "company": "Company", "dates": "Dates", "description": "Details..." }}
-                ],
-                "education": [
-                    {{ "degree": "Degree", "school": "School", "dates": "Dates" }}
-                ]
-            }},
-            "real_name": "Name",
-            "job_titles": ["Title1", "Title2"],
-            "keywords_to_avoid": ["Avoid1", "Avoid2"]
-        }}
-        """
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192})
+                    RETURN JSON ONLY with this structure:
+                    {{
+                        "structured_cv": {{
+                            "role_title": "Anonymized Role",
+                            "summary": "Summary...",
+                            "skills": ["Skill1", "Skill2"],
+                            "languages": ["Lang1"],
+                            "experience": [
+                                {{ "title": "Job Title", "company": "Company", "dates": "Dates", "description": "Details..." }}
+                            ],
+                            "education": [
+                                {{ "degree": "Degree", "school": "School", "dates": "Dates" }}
+                            ]
+                        }},
+                        "real_name": "Name",
+                        "job_titles": ["Title1", "Title2"],
+                        "keywords_to_avoid": ["Avoid1", "Avoid2"]
+                    }}
+                    """
+                }
+            ],
+            response_format={ "type": "json_object" }
+        )
+        
+        response_content = response.choices[0].message.content
         
         try:
-            data = json.loads(response.text)
+            data = json.loads(response_content)
         except json.JSONDecodeError:
             print("⚠️ JSON Cutoff Detected! Attempting repair...")
-            safe_text = response.text.strip()
+            safe_text = response_content.strip()
             if not safe_text.endswith("}"): safe_text += '}'
             try: data = json.loads(safe_text)
             except: return {"real_name": "Unknown", "job_titles": ["Developer"], "keywords_to_avoid": [], "structured_cv": {"summary": "Error parsing."}}
@@ -173,34 +188,49 @@ def get_ai_scores(jobs, skills_list):
     for idx, job in enumerate(jobs_to_score):
         job_text_block += f"ID {idx}: {job['title']} at {job['company']} - {job['description']}\n"
 
-    prompt = f"""
-    You are a Recruiter matching a candidate to jobs.
-    Candidate Skills: {", ".join(skills_list)}
-    Jobs to Evaluate:
-    {job_text_block}
-    Task: Rate each job (0-100) based on relevance to candidate skills.
-    Provide a SHORT 1-sentence reason.
-    RETURN JSON ONLY:
-    {{
-        "scores": [
-            {{ "id": 0, "score": 95, "reason": "Perfect match for Cloud skills." }}
-        ]
-    }}
-    """
-
-    model = genai.GenerativeModel('gemini-flash-latest')
+    # CHANGED: OpenAI Message Structure
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a Recruiter. Return JSON only."
+        },
+        {
+            "role": "user",
+            "content": f"""
+            Candidate Skills: {", ".join(skills_list)}
+            Jobs to Evaluate:
+            {job_text_block}
+            Task: Rate each job (0-100) based on relevance to candidate skills.
+            Provide a SHORT 1-sentence reason.
+            RETURN JSON ONLY:
+            {{
+                "scores": [
+                    {{ "id": 0, "score": 95, "reason": "Perfect match for Cloud skills." }}
+                ]
+            }}
+            """
+        }
+    ]
 
     try:
         # ATTEMPT 1
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            response_format={ "type": "json_object" }
+        )
     except Exception as e:
         if "429" in str(e):
-            print("⚠️ Gemini Quota Exceeded (429). Waiting 60 seconds to cooldown...")
+            print("⚠️ OpenAI Quota Exceeded (429). Waiting 60 seconds to cooldown...")
             time.sleep(65) # Wait 65s to be safe
             print("♻️ Retrying AI Scoring...")
             try:
                 # ATTEMPT 2 (Retry)
-                response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages,
+                    response_format={ "type": "json_object" }
+                )
             except Exception as retry_e:
                 print(f"❌ Retry failed: {retry_e}")
                 return jobs # Return jobs without scores if retry fails
@@ -210,7 +240,8 @@ def get_ai_scores(jobs, skills_list):
 
     # Parse Response
     try:
-        score_data = json.loads(response.text)
+        response_content = response.choices[0].message.content
+        score_data = json.loads(response_content)
         for item in score_data.get("scores", []):
             idx = item.get("id")
             if idx is not None and idx < len(jobs_to_score):
@@ -328,35 +359,24 @@ def search_jobs():
             print(f"Jooble Error: {e}")
             continue
 
-    # 3. ULTRA-STRICT FILTERING (The Blocklist you liked)
+    # 3. ULTRA-STRICT FILTERING
     forbidden_words = [
-        # Agencies
         "recruitment", "recruiter", "talent acquisition", "hr manager", "human resources", 
         "headhunter", "agency", "staffing", "werving", "selectie",
-        
-        # Non-Tech / Irrelevant Roles
         "supply chain", "logistics", "warehouse", "operations manager", "floor manager", 
         "store manager", "category manager", "facility", "coordinator", "commissioning",
         "quality", "environmental", "audit", "compliance", "legal",
-        
-        # Sales & Marketing (Strict)
         "sales", "account manager", "marketing", "commercial", "growth", "sme",
-        
-        # Finance
         "financial", "accountant", "tax", "treasury", "controller",
-        
-        # Other Non-Tech
         "cleaner", "driver", "mechanic", "nurse", "teacher", "internship", "stage"
     ]
     
     final_jobs = []
-    
     for job in raw_results:
         title = job.get('title', '').lower()
         company = job.get('company', '').lower()
         link = job.get('link')
 
-        # FILTER: Block if any forbidden word is in the TITLE or COMPANY
         if any(bad in title for bad in forbidden_words): continue
         if any(bad in company for bad in forbidden_words): continue
         
@@ -370,7 +390,6 @@ def search_jobs():
             "match_reason": "Analyzing..."
         })
 
-    # Limit to top 15 for scoring
     final_jobs = final_jobs[:15]
 
     # 4. AI SCORING

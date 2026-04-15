@@ -180,13 +180,14 @@ def get_ai_scores(jobs, skills_list):
     """
     if not jobs or not skills_list: return jobs
 
-    # Only score top 10 to keep it fast
-    jobs_to_score = jobs[:10]
+    # Score all jobs (up to 15 max)
+    jobs_to_score = jobs[:15]
     
-    # Create prompt with Titles and Snippets
+    # Create prompt with Titles and Snippets (truncate long descriptions)
     job_text_block = ""
     for idx, job in enumerate(jobs_to_score):
-        job_text_block += f"ID {idx}: {job['title']} at {job['company']} - {job['description']}\n"
+        desc = (job.get('description', '') or '')[:300]
+        job_text_block += f"ID {idx}: {job['title']} at {job['company']} - {desc}\n"
 
     # CHANGED: OpenAI Message Structure
     messages = [
@@ -249,6 +250,11 @@ def get_ai_scores(jobs, skills_list):
                 jobs[idx]["match_reason"] = item.get("reason")
     except Exception as parse_e:
         print(f"JSON Parse Error: {parse_e}")
+
+    # Set fallback for any unscored jobs
+    for job in jobs:
+        if job.get("match_reason") == "Analyzing...":
+            job["match_reason"] = "Not evaluated"
 
     return jobs
 

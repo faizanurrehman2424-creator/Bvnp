@@ -354,48 +354,32 @@ def search_jobs():
     print(f"🔗 LinkedIn URLs: {search_urls}")
 
     try:
-        # Run the Apify actor with all search URLs
+        # Run the Apify actor with ALL search URLs in one call (cost-efficient)
         run_input = {
-            "searchUrl": search_urls[0],  # Primary search
+            "urls": search_urls,
             "scrapeCompany": False,  # Keep it fast & cheap
-            "startPage": 0,
             "count": 25,
-            "proxy": {
-                "useApifyProxy": True,
-                "apifyProxyGroups": ["RESIDENTIAL"]
-            },
         }
         
-        # Try each search URL until we get results
-        for search_url in search_urls:
-            if len(raw_results) >= 25:
-                break
-                
-            run_input["searchUrl"] = search_url
-            print(f"🔎 Apify Searching: {search_url}")
-            
-            try:
-                run = apify_client.actor("hKByXkMQaC5Qt9UMN").call(
-                    run_input=run_input,
-                    timeout_secs=120
-                )
-                
-                # Fetch results from the dataset
-                dataset_items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
-                
-                if dataset_items:
-                    print(f"✅ Found {len(dataset_items)} jobs from Apify")
-                    for item in dataset_items:
-                        job_link = item.get('link', '')
-                        if job_link and job_link not in seen_urls:
-                            raw_results.append(item)
-                            seen_urls.add(job_link)
-                else:
-                    print(f"⚠️ No results for this search URL")
-                    
-            except Exception as actor_e:
-                print(f"⚠️ Apify actor error for URL: {actor_e}")
-                continue
+        print(f"🔎 Apify running with {len(search_urls)} search URLs...")
+        
+        run = apify_client.actor("hKByXkMQaC5Qt9UMN").call(
+            run_input=run_input,
+            timeout_secs=180
+        )
+        
+        # Fetch results from the dataset
+        dataset_items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
+        
+        if dataset_items:
+            print(f"✅ Found {len(dataset_items)} jobs from Apify")
+            for item in dataset_items:
+                job_link = item.get('link', '')
+                if job_link and job_link not in seen_urls:
+                    raw_results.append(item)
+                    seen_urls.add(job_link)
+        else:
+            print(f"⚠️ No results from Apify")
                 
     except Exception as e:
         print(f"❌ Apify Error: {e}")

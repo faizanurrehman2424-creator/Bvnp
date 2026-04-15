@@ -1,0 +1,11 @@
+Flask
+gunicorn
+pandas
+gspread
+oauth2client
+pypdf
+fpdf
+werkzeug
+requests
+openai
+apify-client

@@ -1,0 +1,15 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Virtual Environment
+venv/
+env/
+
+# Environment Variables & Secrets (CRITICAL)
+.env
+credentials.json
+client_secret.json
+
+# Uploaded files (Render wipes these anyway on restart)
+uploads/

@@ -30,11 +30,15 @@ if OPENAI_API_KEY:
     client = OpenAI(api_key=OPENAI_API_KEY)
 
 # 2. SETUP GOOGLE SHEETS
+SHEET_URL = None
 try:
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
     client_gs = gspread.authorize(creds)
-    sheet = client_gs.open("Candidate_Jobs_DB").sheet1
+    spreadsheet = client_gs.open("Candidate_Jobs_DB")
+    sheet = spreadsheet.sheet1
+    SHEET_URL = spreadsheet.url
+    print(f"✅ Google Sheet connected: {SHEET_URL}")
 except Exception as e:
     print(f"Warning: Google Sheets not connected. Error: {e}")
     sheet = None
@@ -264,6 +268,10 @@ def get_ai_scores(jobs, skills_list):
 def home():
     return render_template('index.html')
 
+@app.route('/sheet_url')
+def get_sheet_url():
+    return jsonify({"url": SHEET_URL})
+
 @app.route('/anonymize', methods=['POST'])
 def anonymize():
     if 'file' not in request.files: return jsonify({"error": "No file"}), 400
@@ -433,7 +441,7 @@ def search_jobs():
     if sheet and final_jobs:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for job in final_jobs:
-            try: sheet.append_row([timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url']])
+            try: sheet.append_row([timestamp, candidate_name, job['title'], job['company'], job['location'], job['job_url'], job.get('match_score', 0)])
             except: pass
     
     return jsonify(final_jobs)

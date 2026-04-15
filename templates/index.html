@@ -63,7 +63,10 @@
             <div class="bg-white rounded-xl shadow-md p-6">
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-2xl font-bold text-gray-800">AI Matched Jobs</h2>
-                    <button onclick="downloadCSV()" class="text-blue-600 hover:underline font-semibold"><i class="fas fa-file-csv"></i> Export CSV</button>
+                    <div class="flex gap-3">
+                        <a href="https://docs.google.com/spreadsheets/d/1" target="_blank" id="sheetLink" class="text-green-600 hover:underline font-semibold"><i class="fas fa-table"></i> Google Sheet</a>
+                        <button onclick="downloadCSV()" class="text-blue-600 hover:underline font-semibold"><i class="fas fa-file-csv"></i> Export CSV</button>
+                    </div>
                 </div>
                 
                 <div id="jobLoader" class="text-center py-8 hidden">
@@ -94,6 +97,13 @@
     <script>
         let currentData = null;
         let currentJobs = null;
+
+        // Fetch Google Sheet URL on load
+        fetch('/sheet_url').then(r => r.json()).then(data => {
+            if (data.url) {
+                document.getElementById('sheetLink').href = data.url;
+            }
+        }).catch(() => {});
 
         function handleFileSelect(input) {
             if (input.files && input.files[0]) {
